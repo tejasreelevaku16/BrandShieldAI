@@ -8,20 +8,48 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
-# ---------------- Findings Schemas ----------------
-class FindingSchema(BaseModel):
-    id: str
-    category: str
-    severity: str
-    rule_or_evidence_id: str
-    rule_title: str
-    flagged_text: str
-    issue: str
-    explanation: str
-    suggested_correction: str
+# ---------------- Review Findings Schemas ----------------
+class FindingDetailSchema(BaseModel):
+    id: Optional[str] = None
+    finding_type: str = Field(..., description="Prohibited Phrase, Terminology Mismatch, Factual Contradiction, or Unsupported Claim")
+    severity: str = Field(..., description="HIGH, MEDIUM, or LOW")
+    explanation: str = Field(..., description="Clear explanation of the issue and why it matters")
+    matched_rule_or_source: str = Field(..., description="ID and title of the matched brand rule or approved source fact")
+    suggested_correction: str = Field(..., description="Actionable recommended fix")
+    status_or_uncertainty_label: str = Field(..., description="Confirmed Violation, Confirmed Contradiction, or Unverified claim")
+    flagged_text: Optional[str] = Field(None, description="The specific text snippet flagged")
+
+    # Compatibility fields
+    category: Optional[str] = None
+    rule_or_evidence_id: Optional[str] = None
+    rule_title: Optional[str] = None
+    issue: Optional[str] = None
     is_resolved: Optional[bool] = False
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ReviewRequest(BaseModel):
+    text: str = Field(..., description="Marketing copy to be checked against brand rules and facts")
+
+    @field_validator("text")
+    def text_must_not_be_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Marketing content cannot be empty or solely whitespace.")
+        return v.strip()
+
+
+class ReviewResponse(BaseModel):
+    brand: str
+    total_findings: int
+    status: str
+    findings: List[FindingDetailSchema]
+    submission_id: Optional[str] = None
+
+
+# ---------------- Legacy / Check Aliases ----------------
+class CheckTextRequest(ReviewRequest):
+    pass
 
 
 class AnalysisSummarySchema(BaseModel):
@@ -32,23 +60,10 @@ class AnalysisSummarySchema(BaseModel):
     status: str
 
 
-# ---------------- Check Request / Response ----------------
-class CheckTextRequest(BaseModel):
-    text: str = Field(..., description="Marketing copy to evaluate")
-
-    @field_validator("text")
-    def text_must_not_be_empty(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("Marketing copy cannot be empty or only whitespace.")
-        if len(v.strip()) < 5:
-            raise ValueError("Marketing copy is too short to evaluate (minimum 5 characters).")
-        return v.strip()
-
-
 class CheckTextResponse(BaseModel):
     submission_id: str
     summary: AnalysisSummarySchema
-    findings: List[FindingSchema]
+    findings: List[FindingDetailSchema]
 
 
 # ---------------- Human Review Decisions ----------------
@@ -77,7 +92,6 @@ class ReviewRecordSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# ---------------- Submission Schemas ----------------
 class SubmissionListItemSchema(BaseModel):
     id: str
     created_at: datetime
@@ -99,7 +113,7 @@ class SubmissionDetailResponse(BaseModel):
     unsupported_claims_count: int
     created_at: datetime
     updated_at: datetime
-    findings: List[FindingSchema]
+    findings: List[FindingDetailSchema]
     reviews: List[ReviewRecordSchema]
 
     model_config = ConfigDict(from_attributes=True)
