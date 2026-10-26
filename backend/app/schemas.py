@@ -4,8 +4,8 @@ Using Pydantic V2 standards.
 """
 
 from datetime import datetime
-from typing import List, Optional
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from typing import List, Optional, Any, Dict
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
 
 # ---------------- Review Findings Schemas ----------------
@@ -29,6 +29,86 @@ class FindingDetailSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# ---------------- Human Decision Schemas ----------------
+VALID_DECISIONS = ["approved", "rejected", "changes_requested"]
+
+class HumanDecisionCreateRequest(BaseModel):
+    decision: str = Field(..., description="Must be 'approved', 'rejected', or 'changes_requested'")
+    comment: Optional[str] = Field(None, max_length=2000, description="Optional reviewer comment or instructions")
+
+    @field_validator("decision")
+    def validate_decision(cls, v: str) -> str:
+        if not v or not isinstance(v, str):
+            raise ValueError(f"Decision is required. Must be one of: {', '.join(VALID_DECISIONS)}")
+        
+        # Normalize: 'Approved' -> 'approved', 'Request Changes' -> 'changes_requested'
+        cleaned = v.strip().lower().replace(" ", "_").replace("-", "_")
+        aliases = {
+            "approved": "approved",
+            "approve": "approved",
+            "rejected": "rejected",
+            "reject": "rejected",
+            "changes_requested": "changes_requested",
+            "request_changes": "changes_requested",
+            "changesrequested": "changes_requested"
+        }
+        if cleaned not in aliases:
+            raise ValueError(f"Invalid decision '{v}'. Allowed values are: {', '.join(VALID_DECISIONS)}")
+        return aliases[cleaned]
+
+
+class HumanDecisionResponse(BaseModel):
+    id: str
+    review_id: str
+    decision: str
+    comment: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------- Content Review Schemas ----------------
+class ReviewCreateRequest(BaseModel):
+    content: Optional[str] = None
+    text: Optional[str] = None
+
+    @model_validator(mode="before")
+    def validate_content_or_text(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            # Accept either 'content' or 'text'
+            val = values.get("content") or values.get("text")
+            if not val or not str(val).strip():
+                raise ValueError("Marketing content cannot be empty or solely whitespace.")
+            values["content"] = str(val).strip()
+            values["text"] = str(val).strip()
+        return values
+
+
+class ContentReviewResponse(BaseModel):
+    id: str
+    content: str
+    status: str
+    total_findings: int
+    created_at: datetime
+    findings: List[FindingDetailSchema]
+    human_decision: Optional[HumanDecisionResponse] = None
+    decisions: List[HumanDecisionResponse] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContentReviewListItem(BaseModel):
+    id: str
+    content: str
+    status: str
+    total_findings: int
+    created_at: datetime
+    latest_decision: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------- Task 2 Backward Compatibility ----------------
 class ReviewRequest(BaseModel):
     text: str = Field(..., description="Marketing copy to be checked against brand rules and facts")
 
@@ -45,9 +125,9 @@ class ReviewResponse(BaseModel):
     status: str
     findings: List[FindingDetailSchema]
     submission_id: Optional[str] = None
+    review_id: Optional[str] = None
 
 
-# ---------------- Legacy / Check Aliases ----------------
 class CheckTextRequest(ReviewRequest):
     pass
 
@@ -66,18 +146,17 @@ class CheckTextResponse(BaseModel):
     findings: List[FindingDetailSchema]
 
 
-# ---------------- Human Review Decisions ----------------
 class ReviewDecisionCreate(BaseModel):
     decision: str = Field(..., description="APPROVE, REJECT, or REQUEST_CHANGES")
-    reviewer_name: str = Field(..., min_length=2, max_length=100, description="Name of the human reviewer")
-    notes: Optional[str] = Field(None, max_length=1000, description="Optional feedback or rejection notes")
+    reviewer_name: str = Field(..., min_length=2, max_length=100)
+    notes: Optional[str] = Field(None, max_length=1000)
 
     @field_validator("decision")
     def validate_decision_enum(cls, v: str) -> str:
-        valid_decisions = ["APPROVE", "REJECT", "REQUEST_CHANGES"]
+        valid_decisions = ["APPROVE", "REJECT", "REQUEST_CHANGES", "approved", "rejected", "changes_requested"]
         v_upper = v.upper()
-        if v_upper not in valid_decisions:
-            raise ValueError(f"Invalid decision '{v}'. Must be one of: {', '.join(valid_decisions)}")
+        if v_upper not in ["APPROVE", "REJECT", "REQUEST_CHANGES"]:
+            raise ValueError(f"Invalid decision '{v}'.")
         return v_upper
 
 

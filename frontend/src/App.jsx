@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 // Sample paragraph containing several intentional brand-rule issues
 const PROBLEMATIC_SAMPLE = 
@@ -15,29 +15,55 @@ const COMPLIANT_SAMPLE =
 export default function App() {
   const [content, setContent] = useState(PROBLEMATIC_SAMPLE);
   const [loading, setLoading] = useState(false);
-  const [reviewResult, setReviewResult] = useState(null);
+  const [activeReview, setActiveReview] = useState(null);
+  const [reviewHistory, setReviewHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
   const [showRules, setShowRules] = useState(false);
 
-  // Calls POST /review
+  // Human Review State
+  const [selectedDecision, setSelectedDecision] = useState('');
+  const [reviewerComment, setReviewerComment] = useState('');
+  const [submittingDecision, setSubmittingDecision] = useState(false);
+
+  // Fetch Review History on mount
+  useEffect(() => {
+    fetchReviewHistory();
+  }, []);
+
+  const fetchReviewHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const res = await fetch('/reviews');
+      if (!res.ok) throw new Error("Failed to load review history");
+      const data = await res.json();
+      setReviewHistory(data);
+    } catch (err) {
+      console.warn("Could not load review history:", err.message);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // 1. Check Content & Save Review via POST /reviews
   const handleCheckContent = async () => {
     if (!content.trim()) {
       setErrorMessage("Marketing content cannot be empty. Please enter or load text to check.");
-      setReviewResult(null);
       return;
     }
 
     setLoading(true);
     setErrorMessage('');
-    setReviewResult(null);
+    setSuccessMessage('');
+    setSelectedDecision('');
+    setReviewerComment('');
 
     try {
-      const response = await fetch('/review', {
+      const response = await fetch('/reviews', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ text: content })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: content })
       });
 
       if (!response.ok) {
@@ -46,16 +72,79 @@ export default function App() {
         throw new Error(detailMsg);
       }
 
-      const data = await response.json();
-      setReviewResult(data);
+      const reviewData = await response.json();
+      setActiveReview(reviewData);
+      setSuccessMessage(`Review record saved to database (ID: ${reviewData.id.slice(0, 8)}).`);
+      
+      // Refresh history list
+      fetchReviewHistory();
     } catch (err) {
       if (err.message && err.message.includes("Failed to fetch")) {
-        setErrorMessage("Unable to connect to the backend server. Please verify that FastAPI is running on port 8000.");
+        setErrorMessage("Unable to connect to the backend server. Please ensure FastAPI is running on port 8000.");
       } else {
         setErrorMessage(err.message || "An unexpected error occurred during review.");
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 2. Load existing review from History via GET /reviews/{id}
+  const handleSelectReview = async (reviewId) => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    try {
+      const res = await fetch(`/reviews/${reviewId}`);
+      if (!res.ok) throw new Error("Could not retrieve review record.");
+      const data = await res.json();
+      setActiveReview(data);
+      setContent(data.content);
+      setSelectedDecision('');
+      setReviewerComment('');
+    } catch (err) {
+      setErrorMessage(err.message || "Failed to load selected review.");
+    }
+  };
+
+  // 3. Submit Human Governance Decision via POST /reviews/{id}/decision
+  const handleSubmitDecision = async () => {
+    if (!activeReview || !activeReview.id) {
+      setErrorMessage("No active review selected to record decision on.");
+      return;
+    }
+    if (!selectedDecision) {
+      setErrorMessage("Please select a decision (Approve, Reject, or Request Changes) before submitting.");
+      return;
+    }
+
+    setSubmittingDecision(true);
+    setErrorMessage('');
+
+    try {
+      const res = await fetch(`/reviews/${activeReview.id}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          decision: selectedDecision,
+          comment: reviewerComment.trim() || undefined
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || "Failed to submit decision.");
+      }
+
+      const updatedReview = await res.json();
+      setActiveReview(updatedReview);
+      setSuccessMessage(`Human decision '${selectedDecision}' successfully saved and logged.`);
+      
+      // Update history
+      fetchReviewHistory();
+    } catch (err) {
+      setErrorMessage(err.message || "Failed to record human decision.");
+    } finally {
+      setSubmittingDecision(false);
     }
   };
 
@@ -94,11 +183,26 @@ export default function App() {
     );
   };
 
+  const getDecisionBadge = (decisionStr) => {
+    if (!decisionStr) return null;
+    const dec = decisionStr.toLowerCase();
+    if (dec === "approved") {
+      return <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">✅ APPROVED</span>;
+    }
+    if (dec === "rejected") {
+      return <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-300">❌ REJECTED</span>;
+    }
+    if (dec === "changes_requested") {
+      return <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300">🔄 CHANGES REQUESTED</span>;
+    }
+    return <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-slate-100 text-slate-800 border">{decisionStr}</span>;
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
-      {/* Top Navigation */}
+      {/* Top Header */}
       <header className="bg-slate-900 border-b border-slate-800 text-white sticky top-0 z-50 shadow-md">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <span className="text-2xl">🛡️</span>
             <div>
@@ -130,13 +234,21 @@ export default function App() {
       </header>
 
       {/* Main Content Area */}
-      <main className="max-w-6xl mx-auto px-4 py-8 flex-1 w-full space-y-6">
+      <main className="max-w-7xl mx-auto px-4 py-6 flex-1 w-full space-y-6">
         
         {/* Error Notification */}
         {errorMessage && (
           <div className="bg-rose-50 border border-rose-300 text-rose-800 px-4 py-3 rounded-lg text-sm flex items-center justify-between shadow-sm">
             <span><strong>Error:</strong> {errorMessage}</span>
             <button onClick={() => setErrorMessage('')} className="font-bold text-rose-800 ml-4 hover:opacity-75">✕</button>
+          </div>
+        )}
+
+        {/* Success Notification */}
+        {successMessage && (
+          <div className="bg-emerald-50 border border-emerald-300 text-emerald-800 px-4 py-3 rounded-lg text-sm flex items-center justify-between shadow-sm">
+            <span>{successMessage}</span>
+            <button onClick={() => setSuccessMessage('')} className="font-bold text-emerald-800 ml-4 hover:opacity-75">✕</button>
           </div>
         )}
 
@@ -163,14 +275,73 @@ export default function App() {
           </div>
         )}
 
-        {/* 2-Column Main Workspace */}
+        {/* 3-Column Layout: History | Editor & Decision | Findings */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           
-          {/* Left Column: Text Area & Controls (6 cols) */}
-          <div className="lg:col-span-6 space-y-4">
+          {/* Column 1: Review History Sidebar (3 cols) */}
+          <div className="lg:col-span-3 space-y-4">
+            <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-3">
+              <div className="flex items-center justify-between border-b pb-2">
+                <h3 className="font-bold text-xs uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+                  <span>📂 Review History</span>
+                </h3>
+                <button
+                  onClick={fetchReviewHistory}
+                  disabled={historyLoading}
+                  className="text-xs text-indigo-600 hover:text-indigo-800"
+                >
+                  {historyLoading ? "..." : "🔄 Refresh"}
+                </button>
+              </div>
+
+              {reviewHistory.length === 0 ? (
+                <p className="text-xs text-slate-400 py-3 text-center">No reviews in database yet.</p>
+              ) : (
+                <div className="space-y-2 max-h-[580px] overflow-y-auto pr-1">
+                  {reviewHistory.map((item) => {
+                    const isSelected = activeReview && activeReview.id === item.id;
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => handleSelectReview(item.id)}
+                        className={`p-3 rounded-lg border text-xs cursor-pointer transition ${
+                          isSelected
+                            ? 'bg-indigo-50 border-indigo-300 ring-1 ring-indigo-400'
+                            : 'bg-slate-50 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-mono text-[10px] text-slate-400">
+                            {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          {item.latest_decision ? (
+                            getDecisionBadge(item.latest_decision)
+                          ) : (
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                              item.total_findings === 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                            }`}>
+                              {item.total_findings} finding{item.total_findings === 1 ? '' : 's'}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-slate-700 line-clamp-2 leading-relaxed">
+                          {item.content}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Column 2: Editor & Human Review Decision (5 cols) */}
+          <div className="lg:col-span-5 space-y-4">
+            
+            {/* Editor Card */}
             <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
               <div className="flex items-center justify-between">
-                <h2 className="text-base font-bold text-slate-900">Marketing Content Draft</h2>
+                <h2 className="text-base font-bold text-slate-900">1. Marketing Content Draft</h2>
                 <span className="text-xs text-slate-400 font-mono">
                   {content.trim().split(/\s+/).filter(Boolean).length} words
                 </span>
@@ -182,7 +353,7 @@ export default function App() {
                 <button
                   onClick={() => {
                     setContent(PROBLEMATIC_SAMPLE);
-                    setReviewResult(null);
+                    setActiveReview(null);
                     setErrorMessage('');
                   }}
                   className="text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold px-2.5 py-1 rounded transition"
@@ -192,7 +363,7 @@ export default function App() {
                 <button
                   onClick={() => {
                     setContent(COMPLIANT_SAMPLE);
-                    setReviewResult(null);
+                    setActiveReview(null);
                     setErrorMessage('');
                   }}
                   className="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 font-semibold px-2.5 py-1 rounded transition"
@@ -201,10 +372,10 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Marketing Content Text Area */}
+              {/* Text Area */}
               <div>
                 <textarea
-                  rows={9}
+                  rows={8}
                   value={content}
                   onChange={(e) => setContent(e.target.value)}
                   placeholder="Paste or write marketing text here for brand-rule review..."
@@ -212,12 +383,12 @@ export default function App() {
                 />
               </div>
 
-              {/* Check Content Button */}
+              {/* Actions */}
               <div className="flex items-center justify-between pt-1">
                 <button
                   onClick={() => {
                     setContent('');
-                    setReviewResult(null);
+                    setActiveReview(null);
                   }}
                   className="text-xs text-slate-500 hover:text-slate-800 transition"
                 >
@@ -241,24 +412,127 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {/* Human Governance Review Decision Box */}
+            {activeReview && (
+              <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
+                <div className="border-b pb-2 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                      <span>⚖️ Human Review Decision</span>
+                    </h2>
+                    <p className="text-[11px] text-slate-500">
+                      Authoritative human verdict stored separately from automated findings.
+                    </p>
+                  </div>
+                  {activeReview.human_decision && (
+                    <div>{getDecisionBadge(activeReview.human_decision.decision)}</div>
+                  )}
+                </div>
+
+                {/* Display Current Decision if already recorded */}
+                {activeReview.human_decision && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs space-y-1">
+                    <div className="flex items-center justify-between text-slate-700">
+                      <strong>Current Verdict:</strong>
+                      <span className="capitalize font-semibold text-slate-900">{activeReview.human_decision.decision.replace('_', ' ')}</span>
+                    </div>
+                    {activeReview.human_decision.comment && (
+                      <div className="text-slate-600 pt-1">
+                        <strong>Reviewer Comment:</strong> "{activeReview.human_decision.comment}"
+                      </div>
+                    )}
+                    <div className="text-[10px] text-slate-400 pt-1">
+                      Logged at: {new Date(activeReview.human_decision.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                )}
+
+                {/* Submit New / Updated Decision */}
+                <div className="space-y-3 pt-1">
+                  <span className="text-xs font-semibold text-slate-700 block">
+                    {activeReview.human_decision ? "Update Decision:" : "Choose Verdict:"}
+                  </span>
+
+                  {/* 3 Decision Choice Buttons */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedDecision('approved')}
+                      className={`py-2 px-2 rounded-lg text-xs font-bold border transition ${
+                        selectedDecision === 'approved'
+                          ? 'bg-emerald-600 text-white border-emerald-700 shadow-sm'
+                          : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                      }`}
+                    >
+                      ✅ Approve
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedDecision('changes_requested')}
+                      className={`py-2 px-2 rounded-lg text-xs font-bold border transition ${
+                        selectedDecision === 'changes_requested'
+                          ? 'bg-amber-600 text-white border-amber-700 shadow-sm'
+                          : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                      }`}
+                    >
+                      🔄 Request Changes
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedDecision('rejected')}
+                      className={`py-2 px-2 rounded-lg text-xs font-bold border transition ${
+                        selectedDecision === 'rejected'
+                          ? 'bg-rose-600 text-white border-rose-700 shadow-sm'
+                          : 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
+                      }`}
+                    >
+                      ❌ Reject
+                    </button>
+                  </div>
+
+                  {/* Reviewer Comment */}
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Reviewer Comment (Optional):
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={reviewerComment}
+                      onChange={(e) => setReviewerComment(e.target.value)}
+                      placeholder="Add compliance notes, rationale, or requested edits..."
+                      className="w-full text-xs rounded border border-slate-300 p-2 focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <button
+                    onClick={handleSubmitDecision}
+                    disabled={submittingDecision || !selectedDecision}
+                    className="w-full py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white shadow-sm transition disabled:opacity-50"
+                  >
+                    {submittingDecision ? "Saving Decision..." : "💾 Submit Human Decision"}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Right Column: Real Explained Findings (6 cols) */}
-          <div className="lg:col-span-6 space-y-4">
+          {/* Column 3: Real Explained Findings (4 cols) */}
+          <div className="lg:col-span-4 space-y-4">
             
-            {/* Initial State / Before Check */}
-            {!reviewResult && !loading && (
+            {/* Initial Placeholder State */}
+            {!activeReview && !loading && (
               <div className="p-8 bg-white rounded-xl border border-dashed border-slate-300 text-center text-slate-400 space-y-2">
                 <span className="text-4xl block">📝</span>
                 <h3 className="text-sm font-semibold text-slate-700">Ready to Check</h3>
-                <p className="text-xs max-w-sm mx-auto">
-                  Click <strong>"Check Content"</strong> or load one of the test samples to run the AetherGlow brand rule engine.
+                <p className="text-xs">
+                  Click <strong>"Check Content"</strong> or pick an existing review from the history to inspect explained findings.
                 </p>
               </div>
             )}
 
             {/* Clear Success State: 0 findings */}
-            {reviewResult && reviewResult.total_findings === 0 && (
+            {activeReview && activeReview.total_findings === 0 && (
               <div className="p-6 bg-emerald-50 rounded-xl border border-emerald-200 text-emerald-900 shadow-sm space-y-2">
                 <div className="flex items-center space-x-2">
                   <span className="text-2xl">✅</span>
@@ -270,64 +544,55 @@ export default function App() {
               </div>
             )}
 
-            {/* Findings Display: When issues are detected */}
-            {reviewResult && reviewResult.total_findings > 0 && (
+            {/* Findings List */}
+            {activeReview && activeReview.total_findings > 0 && (
               <div className="space-y-3">
                 <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-center justify-between text-rose-900 shadow-sm">
                   <div>
-                    <h3 className="font-bold text-sm flex items-center gap-2">
-                      <span>🚨 Action Required</span>
-                    </h3>
+                    <h3 className="font-bold text-sm">Automated Rule Findings</h3>
                     <p className="text-xs text-rose-700 mt-0.5">
-                      {reviewResult.total_findings} finding{reviewResult.total_findings === 1 ? '' : 's'} identified by the rule engine.
+                      {activeReview.total_findings} finding{activeReview.total_findings === 1 ? '' : 's'} identified by the engine.
                     </p>
                   </div>
                   <span className="font-mono text-xs font-bold px-2.5 py-1 rounded bg-white border border-rose-200 text-rose-800">
-                    {reviewResult.total_findings} Issues
+                    {activeReview.total_findings} Issues
                   </span>
                 </div>
 
-                {/* List of Real Findings */}
                 <div className="space-y-3">
-                  {reviewResult.findings.map((finding, idx) => (
+                  {activeReview.findings.map((finding, idx) => (
                     <div
                       key={finding.id || idx}
-                      className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-3 hover:border-slate-300 transition"
+                      className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-2.5 hover:border-slate-300 transition"
                     >
-                      {/* Header: Finding Type & Badges */}
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5">
                           {getStatusBadge(finding.status_or_uncertainty_label)}
-                          <span className="text-xs font-semibold text-slate-800">
-                            {finding.finding_type}
-                          </span>
+                          <span className="text-xs font-semibold text-slate-800">{finding.finding_type}</span>
                         </div>
                         {getSeverityBadge(finding.severity)}
                       </div>
 
-                      {/* Flagged Text Snippet */}
                       {finding.flagged_text && (
                         <div className="text-xs text-slate-600">
-                          Detected in text:{" "}
-                          <span className="font-mono bg-rose-50 text-rose-800 px-1.5 py-0.5 rounded border border-rose-200 font-semibold">
+                          Flagged text:{" "}
+                          <span className="font-mono bg-rose-50 text-rose-800 px-1 py-0.5 rounded border border-rose-200 font-semibold">
                             "{finding.flagged_text}"
                           </span>
                         </div>
                       )}
 
-                      {/* Explanation */}
-                      <div className="bg-slate-50 rounded-lg p-3 text-xs text-slate-700 border border-slate-200 leading-relaxed">
+                      <div className="bg-slate-50 rounded-lg p-2.5 text-xs text-slate-700 border border-slate-200 leading-relaxed">
                         <strong className="text-slate-900 block mb-0.5">Why this matters:</strong>
                         {finding.explanation}
                       </div>
 
-                      {/* Matched Rule & Suggested Correction */}
-                      <div className="bg-indigo-50/60 rounded-lg p-3 text-xs text-indigo-950 border border-indigo-100 space-y-1.5">
+                      <div className="bg-indigo-50/60 rounded-lg p-2.5 text-xs text-indigo-950 border border-indigo-100 space-y-1">
                         <div className="text-[11px] text-indigo-700 font-medium">
-                          <strong>Matched Source:</strong> {finding.matched_rule_or_source}
+                          <strong>Source:</strong> {finding.matched_rule_or_source}
                         </div>
                         <div>
-                          <strong>Suggested Correction:</strong> {finding.suggested_correction}
+                          <strong>Correction:</strong> {finding.suggested_correction}
                         </div>
                       </div>
                     </div>
@@ -341,12 +606,12 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-4 mt-auto">
-        <div className="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-2">
+        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-2">
           <div>
             <strong>BrandShield AI</strong> • Built for CodeStar 30 Round 2 • Team: <strong>AETHORA</strong>
           </div>
           <div>
-            FastAPI Rule Engine (POST /review) • React & Tailwind UI
+            FastAPI Persistent Storage (SQLite) • React & Tailwind Review Workflow
           </div>
         </div>
       </footer>
