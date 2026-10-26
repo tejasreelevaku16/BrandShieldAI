@@ -1,6 +1,7 @@
 """
 SQLAlchemy Database Models for BrandShield AI.
-Tracks Content Reviews, Automated Findings, and Human Review Decisions.
+Tracks Content Reviews, Automated Findings, Human Review Decisions,
+Editable Brand Rules, and Approved Fact Sources.
 """
 
 from datetime import datetime, timezone
@@ -14,10 +15,48 @@ def utc_now():
     return datetime.now(timezone.utc)
 
 
+class BrandRule(Base):
+    """
+    Editable brand compliance guidelines and language standards.
+    Supports prohibited phrases, preferred terminology, required phrases, and custom text rules.
+    """
+    __tablename__ = "brand_rules"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    rule_id = Column(String(50), unique=True, nullable=False, index=True)
+    name = Column(String(200), nullable=False)
+    rule_type = Column(String(50), nullable=False)  # 'prohibited_phrase', 'preferred_terminology', 'required_phrase', 'custom_text'
+    description = Column(Text, nullable=False)
+    severity = Column(String(20), nullable=False, default="MEDIUM")  # 'HIGH', 'MEDIUM', 'LOW'
+    prohibited_phrase = Column(String(255), nullable=True)  # Term or phrase to detect/avoid
+    preferred_replacement = Column(String(255), nullable=True)  # Approved replacement
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class ApprovedFact(Base):
+    """
+    Approved company facts and certified specifications for demonstration brand AetherGlow.
+    Source URLs serve as supporting references, not absolute real-world truth.
+    """
+    __tablename__ = "approved_facts"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    fact_id = Column(String(50), unique=True, nullable=False, index=True)
+    statement = Column(Text, nullable=False)
+    source_name = Column(String(255), nullable=False)
+    source_url = Column(String(500), nullable=True)
+    verification_status = Column(String(50), nullable=False, default="verified_sample")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
 class ContentReview(Base):
     """
     Stores submitted marketing content, automated rule findings (as structured JSON),
-    and current review status.
+    guidelines snapshot, and current review status.
     """
     __tablename__ = "content_reviews"
 
@@ -26,9 +65,9 @@ class ContentReview(Base):
     findings = Column(JSON, nullable=False, default=list)
     status = Column(String(50), nullable=False, default="action_required")
     total_findings = Column(Integer, default=0)
+    guidelines_snapshot = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
-    # Relationship to HumanReviewDecision (one-to-many or latest decision)
     decisions = relationship(
         "HumanReviewDecision",
         back_populates="review",
@@ -53,7 +92,7 @@ class HumanReviewDecision(Base):
     review = relationship("ContentReview", back_populates="decisions")
 
 
-# Backward-compatibility models for existing endpoints and tests
+# Backward-compatibility models for earlier endpoints
 class Submission(Base):
     __tablename__ = "submissions"
 

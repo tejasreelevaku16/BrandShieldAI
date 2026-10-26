@@ -8,6 +8,135 @@ from typing import List, Optional, Any, Dict
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 
 
+# ---------------- Brand Rule Schemas (Task 4) ----------------
+VALID_RULE_TYPES = ["prohibited_phrase", "preferred_terminology", "required_phrase", "custom_text"]
+VALID_SEVERITIES = ["HIGH", "MEDIUM", "LOW"]
+
+class BrandRuleCreate(BaseModel):
+    rule_id: Optional[str] = Field(None, max_length=50, description="Unique human-readable rule ID")
+    name: str = Field(..., min_length=2, max_length=200, description="Rule name")
+    rule_type: str = Field(..., description="prohibited_phrase, preferred_terminology, required_phrase, or custom_text")
+    description: str = Field(..., min_length=5, description="Rule description and rationale")
+    severity: str = Field("MEDIUM", description="HIGH, MEDIUM, or LOW")
+    prohibited_phrase: Optional[str] = Field(None, max_length=255, description="Phrase to detect/avoid")
+    preferred_replacement: Optional[str] = Field(None, max_length=255, description="Preferred alternative or required text")
+    is_active: bool = Field(True, description="Whether the rule is active")
+
+    @field_validator("name", "description")
+    def validate_non_empty_strings(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty or only whitespace.")
+        return v.strip()
+
+    @field_validator("rule_type")
+    def validate_rule_type(cls, v: str) -> str:
+        cleaned = v.strip().lower()
+        if cleaned not in VALID_RULE_TYPES:
+            raise ValueError(f"Invalid rule type '{v}'. Allowed types are: {', '.join(VALID_RULE_TYPES)}")
+        return cleaned
+
+    @field_validator("severity")
+    def validate_severity(cls, v: str) -> str:
+        cleaned = v.strip().upper()
+        if cleaned not in VALID_SEVERITIES:
+            raise ValueError(f"Invalid severity '{v}'. Allowed values are: {', '.join(VALID_SEVERITIES)}")
+        return cleaned
+
+
+class BrandRuleUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=200)
+    rule_type: Optional[str] = None
+    description: Optional[str] = Field(None, min_length=5)
+    severity: Optional[str] = None
+    prohibited_phrase: Optional[str] = None
+    preferred_replacement: Optional[str] = None
+    is_active: Optional[bool] = None
+
+    @field_validator("name", "description")
+    def validate_non_empty(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.strip():
+            raise ValueError("Field cannot be empty or only whitespace.")
+        return v.strip() if v else v
+
+    @field_validator("rule_type")
+    def validate_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            cleaned = v.strip().lower()
+            if cleaned not in VALID_RULE_TYPES:
+                raise ValueError(f"Invalid rule type '{v}'. Allowed types are: {', '.join(VALID_RULE_TYPES)}")
+            return cleaned
+        return v
+
+    @field_validator("severity")
+    def validate_sev(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            cleaned = v.strip().upper()
+            if cleaned not in VALID_SEVERITIES:
+                raise ValueError(f"Invalid severity '{v}'. Allowed values are: {', '.join(VALID_SEVERITIES)}")
+            return cleaned
+        return v
+
+
+class BrandRuleResponse(BaseModel):
+    id: str
+    rule_id: str
+    name: str
+    rule_type: str
+    description: str
+    severity: str
+    prohibited_phrase: Optional[str] = None
+    preferred_replacement: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------- Approved Fact Schemas (Task 4) ----------------
+class ApprovedFactCreate(BaseModel):
+    fact_id: Optional[str] = Field(None, max_length=50, description="Unique fact ID")
+    statement: str = Field(..., min_length=5, description="Approved company fact statement")
+    source_name: str = Field(..., min_length=2, max_length=255, description="Reference name / document title")
+    source_url: Optional[str] = Field(None, max_length=500, description="Optional supporting reference URL")
+    verification_status: str = Field("verified_sample", description="Status e.g. verified_sample, pending")
+    is_active: bool = Field(True, description="Whether the fact is active")
+
+    @field_validator("statement", "source_name")
+    def validate_non_empty_strings(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty or only whitespace.")
+        return v.strip()
+
+
+class ApprovedFactUpdate(BaseModel):
+    statement: Optional[str] = Field(None, min_length=5)
+    source_name: Optional[str] = Field(None, min_length=2, max_length=255)
+    source_url: Optional[str] = None
+    verification_status: Optional[str] = None
+    is_active: Optional[bool] = None
+
+    @field_validator("statement", "source_name")
+    def validate_non_empty(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v.strip():
+            raise ValueError("Field cannot be empty or only whitespace.")
+        return v.strip() if v else v
+
+
+class ApprovedFactResponse(BaseModel):
+    id: str
+    fact_id: str
+    statement: str
+    source_name: str
+    source_url: Optional[str] = None
+    verification_status: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ---------------- Review Findings Schemas ----------------
 class FindingDetailSchema(BaseModel):
     id: Optional[str] = None
@@ -41,7 +170,6 @@ class HumanDecisionCreateRequest(BaseModel):
         if not v or not isinstance(v, str):
             raise ValueError(f"Decision is required. Must be one of: {', '.join(VALID_DECISIONS)}")
         
-        # Normalize: 'Approved' -> 'approved', 'Request Changes' -> 'changes_requested'
         cleaned = v.strip().lower().replace(" ", "_").replace("-", "_")
         aliases = {
             "approved": "approved",
@@ -75,7 +203,6 @@ class ReviewCreateRequest(BaseModel):
     @model_validator(mode="before")
     def validate_content_or_text(cls, values: Any) -> Any:
         if isinstance(values, dict):
-            # Accept either 'content' or 'text'
             val = values.get("content") or values.get("text")
             if not val or not str(val).strip():
                 raise ValueError("Marketing content cannot be empty or solely whitespace.")
@@ -91,6 +218,7 @@ class ContentReviewResponse(BaseModel):
     total_findings: int
     created_at: datetime
     findings: List[FindingDetailSchema]
+    guidelines_snapshot: Optional[Dict[str, Any]] = None
     human_decision: Optional[HumanDecisionResponse] = None
     decisions: List[HumanDecisionResponse] = []
 

@@ -1,7 +1,8 @@
 """
 BrandShield AI - FastAPI Application
 Provides RESTful APIs for AetherGlow marketing text analysis,
-persistent review storage, and human governance decisions.
+brand guidelines management (rules & approved facts), persistent review storage,
+and human governance decisions.
 """
 
 from contextlib import asynccontextmanager
@@ -11,9 +12,23 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from .database import engine, Base, get_db
-from .models import ContentReview, HumanReviewDecision, Submission, FindingRecord, ReviewRecord
+from .database import engine, Base, SessionLocal, get_db
+from .models import (
+    BrandRule,
+    ApprovedFact,
+    ContentReview,
+    HumanReviewDecision,
+    Submission,
+    FindingRecord,
+    ReviewRecord
+)
 from .schemas import (
+    BrandRuleCreate,
+    BrandRuleUpdate,
+    BrandRuleResponse,
+    ApprovedFactCreate,
+    ApprovedFactUpdate,
+    ApprovedFactResponse,
     ReviewCreateRequest,
     ContentReviewResponse,
     ContentReviewListItem,
@@ -34,17 +49,80 @@ from .rules_data import BRAND_PROFILE, BRAND_RULES, APPROVED_FACTS, APPROVED_WHI
 from .engine import analyze_marketing_text
 
 
+def seed_default_guidelines_if_empty(db: Session):
+    """
+    Safely seeds initial AetherGlow brand rules and approved facts if tables are empty.
+    Never overwrites or deletes existing records on restart.
+    """
+    if db.query(BrandRule).count() == 0:
+        default_rules = [
+            BrandRule(
+                id=str(uuid.uuid4()),
+                rule_id="RULE-PROHIBITED-01",
+                name="Prohibited Absolute Outcome Guarantee",
+                rule_type="prohibited_phrase",
+                description="Never use the phrase 'guaranteed 100% results' or promise unconditional outcomes.",
+                severity="HIGH",
+                prohibited_phrase="guaranteed 100% results",
+                preferred_replacement="formulated to deliver visible radiance and support healthy skin",
+                is_active=True
+            ),
+            BrandRule(
+                id=str(uuid.uuid4()),
+                rule_id="RULE-TERM-01",
+                name="Approved Audience Terminology",
+                rule_type="preferred_terminology",
+                description="Always refer to our audience as 'customers', never as 'consumers'.",
+                severity="LOW",
+                prohibited_phrase="consumers",
+                preferred_replacement="customers",
+                is_active=True
+            )
+        ]
+        db.add_all(default_rules)
+        db.commit()
+
+    if db.query(ApprovedFact).count() == 0:
+        default_facts = [
+            ApprovedFact(
+                id=str(uuid.uuid4()),
+                fact_id="FACT-PKG-01",
+                statement="AetherGlow products are made with 70% recycled packaging.",
+                source_name="AetherGlow Packaging Audit 2025",
+                source_url="https://aetherglow.example.com/sustainability-2025",
+                verification_status="verified_sample",
+                is_active=True
+            ),
+            ApprovedFact(
+                id=str(uuid.uuid4()),
+                fact_id="FACT-FND-01",
+                statement="AetherGlow was founded in 2020.",
+                source_name="Corporate Registry Certificate (Delaware)",
+                source_url="https://aetherglow.example.com/corporate-charter",
+                verification_status="verified_sample",
+                is_active=True
+            )
+        ]
+        db.add_all(default_facts)
+        db.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize SQLite database tables safely on startup (does not overwrite existing records)
+    # Initialize SQLite database tables safely on startup
     Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        seed_default_guidelines_if_empty(db)
+    finally:
+        db.close()
     yield
 
 
 app = FastAPI(
     title="BrandShield AI API",
-    description="Pre-publication brand-governance, review persistence & human decision workflow for AetherGlow",
-    version="3.0.0",
+    description="Pre-publication brand-governance, guidelines management & review workflow for AetherGlow",
+    version="4.0.0",
     lifespan=lifespan
 )
 
@@ -58,7 +136,6 @@ app.add_middleware(
 )
 
 
-# Helper to convert a ContentReview ORM object to ContentReviewResponse schema
 def format_content_review_response(review: ContentReview) -> ContentReviewResponse:
     latest_decision_record = review.decisions[0] if review.decisions else None
     human_decision = None
@@ -106,12 +183,13 @@ def format_content_review_response(review: ContentReview) -> ContentReviewRespon
         total_findings=review.total_findings,
         created_at=review.created_at,
         findings=findings_list,
+        guidelines_snapshot=review.guidelines_snapshot,
         human_decision=human_decision,
         decisions=all_decisions
     )
 
 
-# ---------------- System & Governance Info ----------------
+# ---------------- System & Guidelines Summary Endpoints ----------------
 @app.get("/api/health", tags=["System"])
 def health_check():
     """System health check and brand identity endpoint."""
@@ -125,39 +203,268 @@ def health_check():
 
 
 @app.get("/api/brand-guidelines", tags=["Governance"])
-def get_brand_guidelines():
-    """Returns approved brand rules, verified facts, and official specs for AetherGlow."""
+def get_brand_guidelines(db: Session = Depends(get_db)):
+    """Returns active brand rules and approved facts from database."""
+    rules = db.query(BrandRule).filter(BrandRule.is_active == True).all()
+    facts = db.query(ApprovedFact).filter(ApprovedFact.is_active == True).all()
     return {
         "profile": BRAND_PROFILE,
-        "rules": BRAND_RULES,
-        "approved_facts": APPROVED_FACTS,
+        "rules": rules,
+        "approved_facts": facts,
         "whitelisted_evidence": APPROVED_WHITELIST_CLAIMS
     }
 
 
-# ---------------- Task 3: Content Reviews & Human Governance Endpoints ----------------
+# ---------------- Task 4: Brand Guidelines Management Endpoints ----------------
+@app.get("/rules", response_model=List[BrandRuleResponse], tags=["Brand Rules"])
+@app.get("/api/rules", response_model=List[BrandRuleResponse], tags=["Brand Rules"])
+def list_rules(db: Session = Depends(get_db)):
+    """Lists all brand rules in the database."""
+    return db.query(BrandRule).order_by(BrandRule.created_at.asc()).all()
+
+
+@app.post("/rules", response_model=BrandRuleResponse, status_code=status.HTTP_201_CREATED, tags=["Brand Rules"])
+@app.post("/api/rules", response_model=BrandRuleResponse, status_code=status.HTTP_201_CREATED, tags=["Brand Rules"])
+def create_rule(payload: BrandRuleCreate, db: Session = Depends(get_db)):
+    """Creates a new brand rule with validation."""
+    rule_id = payload.rule_id
+    if not rule_id or not rule_id.strip():
+        rule_id = f"RULE-{str(uuid.uuid4())[:8].upper()}"
+    else:
+        rule_id = rule_id.strip().upper()
+        # Check for duplicate rule_id
+        existing = db.query(BrandRule).filter(BrandRule.rule_id == rule_id).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Rule with ID '{rule_id}' already exists.")
+
+    new_rule = BrandRule(
+        id=str(uuid.uuid4()),
+        rule_id=rule_id,
+        name=payload.name,
+        rule_type=payload.rule_type,
+        description=payload.description,
+        severity=payload.severity,
+        prohibited_phrase=payload.prohibited_phrase.strip() if payload.prohibited_phrase else None,
+        preferred_replacement=payload.preferred_replacement.strip() if payload.preferred_replacement else None,
+        is_active=payload.is_active
+    )
+    db.add(new_rule)
+    db.commit()
+    db.refresh(new_rule)
+    return new_rule
+
+
+@app.get("/rules/{rule_identifier}", response_model=BrandRuleResponse, tags=["Brand Rules"])
+def get_rule(rule_identifier: str, db: Session = Depends(get_db)):
+    """Retrieves a single rule by ID or rule_id."""
+    rule = db.query(BrandRule).filter(
+        (BrandRule.id == rule_identifier) | (BrandRule.rule_id == rule_identifier)
+    ).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_identifier}' not found.")
+    return rule
+
+
+@app.put("/rules/{rule_identifier}", response_model=BrandRuleResponse, tags=["Brand Rules"])
+def update_rule(rule_identifier: str, payload: BrandRuleUpdate, db: Session = Depends(get_db)):
+    """Updates an existing brand rule."""
+    rule = db.query(BrandRule).filter(
+        (BrandRule.id == rule_identifier) | (BrandRule.rule_id == rule_identifier)
+    ).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_identifier}' not found.")
+
+    if payload.name is not None:
+        rule.name = payload.name
+    if payload.rule_type is not None:
+        rule.rule_type = payload.rule_type
+    if payload.description is not None:
+        rule.description = payload.description
+    if payload.severity is not None:
+        rule.severity = payload.severity
+    if payload.prohibited_phrase is not None:
+        rule.prohibited_phrase = payload.prohibited_phrase.strip() if payload.prohibited_phrase else None
+    if payload.preferred_replacement is not None:
+        rule.preferred_replacement = payload.preferred_replacement.strip() if payload.preferred_replacement else None
+    if payload.is_active is not None:
+        rule.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@app.patch("/rules/{rule_identifier}/toggle", response_model=BrandRuleResponse, tags=["Brand Rules"])
+def toggle_rule_active(rule_identifier: str, db: Session = Depends(get_db)):
+    """Toggles active/inactive status of a brand rule."""
+    rule = db.query(BrandRule).filter(
+        (BrandRule.id == rule_identifier) | (BrandRule.rule_id == rule_identifier)
+    ).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_identifier}' not found.")
+
+    rule.is_active = not rule.is_active
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@app.delete("/rules/{rule_identifier}", status_code=status.HTTP_200_OK, tags=["Brand Rules"])
+def delete_rule(rule_identifier: str, db: Session = Depends(get_db)):
+    """Deletes a rule after confirmation."""
+    rule = db.query(BrandRule).filter(
+        (BrandRule.id == rule_identifier) | (BrandRule.rule_id == rule_identifier)
+    ).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_identifier}' not found.")
+
+    db.delete(rule)
+    db.commit()
+    return {"message": f"Rule '{rule.rule_id}' ({rule.name}) deleted successfully."}
+
+
+# ---------------- Task 4: Approved Fact Sources Endpoints ----------------
+@app.get("/facts", response_model=List[ApprovedFactResponse], tags=["Approved Facts"])
+@app.get("/api/facts", response_model=List[ApprovedFactResponse], tags=["Approved Facts"])
+def list_facts(db: Session = Depends(get_db)):
+    """Lists all approved fact sources in the database."""
+    return db.query(ApprovedFact).order_by(ApprovedFact.created_at.asc()).all()
+
+
+@app.post("/facts", response_model=ApprovedFactResponse, status_code=status.HTTP_201_CREATED, tags=["Approved Facts"])
+@app.post("/api/facts", response_model=ApprovedFactResponse, status_code=status.HTTP_201_CREATED, tags=["Approved Facts"])
+def create_fact(payload: ApprovedFactCreate, db: Session = Depends(get_db)):
+    """Creates a new approved fact source."""
+    fact_id = payload.fact_id
+    if not fact_id or not fact_id.strip():
+        fact_id = f"FACT-{str(uuid.uuid4())[:8].upper()}"
+    else:
+        fact_id = fact_id.strip().upper()
+        existing = db.query(ApprovedFact).filter(ApprovedFact.fact_id == fact_id).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Fact with ID '{fact_id}' already exists.")
+
+    new_fact = ApprovedFact(
+        id=str(uuid.uuid4()),
+        fact_id=fact_id,
+        statement=payload.statement,
+        source_name=payload.source_name,
+        source_url=payload.source_url.strip() if payload.source_url else None,
+        verification_status=payload.verification_status,
+        is_active=payload.is_active
+    )
+    db.add(new_fact)
+    db.commit()
+    db.refresh(new_fact)
+    return new_fact
+
+
+@app.get("/facts/{fact_identifier}", response_model=ApprovedFactResponse, tags=["Approved Facts"])
+def get_fact(fact_identifier: str, db: Session = Depends(get_db)):
+    """Retrieves an approved fact by ID or fact_id."""
+    fact = db.query(ApprovedFact).filter(
+        (ApprovedFact.id == fact_identifier) | (ApprovedFact.fact_id == fact_identifier)
+    ).first()
+    if not fact:
+        raise HTTPException(status_code=404, detail=f"Fact '{fact_identifier}' not found.")
+    return fact
+
+
+@app.put("/facts/{fact_identifier}", response_model=ApprovedFactResponse, tags=["Approved Facts"])
+def update_fact(fact_identifier: str, payload: ApprovedFactUpdate, db: Session = Depends(get_db)):
+    """Updates an approved fact source."""
+    fact = db.query(ApprovedFact).filter(
+        (ApprovedFact.id == fact_identifier) | (ApprovedFact.fact_id == fact_identifier)
+    ).first()
+    if not fact:
+        raise HTTPException(status_code=404, detail=f"Fact '{fact_identifier}' not found.")
+
+    if payload.statement is not None:
+        fact.statement = payload.statement
+    if payload.source_name is not None:
+        fact.source_name = payload.source_name
+    if payload.source_url is not None:
+        fact.source_url = payload.source_url.strip() if payload.source_url else None
+    if payload.verification_status is not None:
+        fact.verification_status = payload.verification_status
+    if payload.is_active is not None:
+        fact.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(fact)
+    return fact
+
+
+@app.patch("/facts/{fact_identifier}/toggle", response_model=ApprovedFactResponse, tags=["Approved Facts"])
+def toggle_fact_active(fact_identifier: str, db: Session = Depends(get_db)):
+    """Toggles active/inactive status of an approved fact."""
+    fact = db.query(ApprovedFact).filter(
+        (ApprovedFact.id == fact_identifier) | (ApprovedFact.fact_id == fact_identifier)
+    ).first()
+    if not fact:
+        raise HTTPException(status_code=404, detail=f"Fact '{fact_identifier}' not found.")
+
+    fact.is_active = not fact.is_active
+    db.commit()
+    db.refresh(fact)
+    return fact
+
+
+@app.delete("/facts/{fact_identifier}", status_code=status.HTTP_200_OK, tags=["Approved Facts"])
+def delete_fact(fact_identifier: str, db: Session = Depends(get_db)):
+    """Deletes an approved fact source after confirmation."""
+    fact = db.query(ApprovedFact).filter(
+        (ApprovedFact.id == fact_identifier) | (ApprovedFact.fact_id == fact_identifier)
+    ).first()
+    if not fact:
+        raise HTTPException(status_code=404, detail=f"Fact '{fact_identifier}' not found.")
+
+    db.delete(fact)
+    db.commit()
+    return {"message": f"Fact '{fact.fact_id}' deleted successfully."}
+
+
+# ---------------- Content Reviews & Human Governance Endpoints ----------------
 @app.post("/reviews", response_model=ContentReviewResponse, status_code=status.HTTP_201_CREATED, tags=["Reviews"])
 def create_review(payload: ReviewCreateRequest, db: Session = Depends(get_db)):
     """
     POST /reviews
-    Runs the deterministic rule engine, saves the content and findings in the database,
-    and returns the saved review record.
+    Loads active rules and approved facts from the database, executes the rule engine,
+    saves the content, findings, and guidelines snapshot to SQLite, and returns the saved review.
     """
     content = payload.content or payload.text
-    analysis = analyze_marketing_text(content)
+    
+    # Load dynamic active rules and active facts from database
+    active_rules = db.query(BrandRule).filter(BrandRule.is_active == True).all()
+    if not active_rules and db.query(BrandRule).count() == 0:
+        seed_default_guidelines_if_empty(db)
+        active_rules = db.query(BrandRule).filter(BrandRule.is_active == True).all()
+
+    active_facts = db.query(ApprovedFact).filter(ApprovedFact.is_active == True).all()
+    if not active_facts and db.query(ApprovedFact).count() == 0:
+        seed_default_guidelines_if_empty(db)
+        active_facts = db.query(ApprovedFact).filter(ApprovedFact.is_active == True).all()
+
+    analysis = analyze_marketing_text(content, active_rules=active_rules, active_facts=active_facts)
     findings_data = analysis["findings"]
 
-    # Assign persistent IDs to findings
     for f in findings_data:
         if not f.get("id"):
             f["id"] = str(uuid.uuid4())
+
+    # Snapshot of active rules and facts used for this review
+    guidelines_snapshot = {
+        "rules_applied": [{"rule_id": r.rule_id, "name": r.name, "rule_type": r.rule_type} for r in active_rules],
+        "facts_applied": [{"fact_id": f.fact_id, "statement": f.statement, "source": f.source_name} for f in active_facts]
+    }
 
     new_review = ContentReview(
         id=str(uuid.uuid4()),
         content=content,
         findings=findings_data,
         status="clean" if len(findings_data) == 0 else "action_required",
-        total_findings=len(findings_data)
+        total_findings=len(findings_data),
+        guidelines_snapshot=guidelines_snapshot
     )
     db.add(new_review)
     db.commit()
@@ -209,7 +516,6 @@ def save_human_decision(review_id: str, payload: HumanDecisionCreateRequest, db:
     POST /reviews/{review_id}/decision
     Saves a human decision ('approved', 'rejected', or 'changes_requested') and optional comment.
     Preserves all original automated findings without modification.
-    Returns 404 if review does not exist.
     """
     review = db.query(ContentReview).filter(ContentReview.id == review_id).first()
     if not review:
@@ -226,7 +532,6 @@ def save_human_decision(review_id: str, payload: HumanDecisionCreateRequest, db:
     )
     db.add(decision_record)
 
-    # Update overall review status to reflect human decision
     review.status = payload.decision
     db.commit()
     db.refresh(review)
@@ -240,10 +545,20 @@ def save_human_decision(review_id: str, payload: HumanDecisionCreateRequest, db:
 def review_content(payload: ReviewRequest, db: Session = Depends(get_db)):
     """
     Task 2 endpoint maintained for backward compatibility.
-    Runs rule engine and saves to database.
+    Loads active guidelines from DB and evaluates text.
     """
     content = payload.text
-    analysis = analyze_marketing_text(content)
+    active_rules = db.query(BrandRule).filter(BrandRule.is_active == True).all()
+    if not active_rules and db.query(BrandRule).count() == 0:
+        seed_default_guidelines_if_empty(db)
+        active_rules = db.query(BrandRule).filter(BrandRule.is_active == True).all()
+
+    active_facts = db.query(ApprovedFact).filter(ApprovedFact.is_active == True).all()
+    if not active_facts and db.query(ApprovedFact).count() == 0:
+        seed_default_guidelines_if_empty(db)
+        active_facts = db.query(ApprovedFact).filter(ApprovedFact.is_active == True).all()
+
+    analysis = analyze_marketing_text(content, active_rules=active_rules, active_facts=active_facts)
     findings_data = analysis["findings"]
 
     for f in findings_data:
@@ -290,9 +605,6 @@ def review_content(payload: ReviewRequest, db: Session = Depends(get_db)):
 
 @app.post("/api/check", response_model=CheckTextResponse, status_code=status.HTTP_201_CREATED, tags=["Verification"])
 def check_text(payload: CheckTextRequest, db: Session = Depends(get_db)):
-    """
-    Check endpoint mapping to review logic for frontend compatibility.
-    """
     review_res = review_content(payload, db)
     rule_v = sum(1 for f in review_res.findings if f.category == "RULE_VIOLATION")
     fact_c = sum(1 for f in review_res.findings if f.category == "FACTUAL_CONTRADICTION")
