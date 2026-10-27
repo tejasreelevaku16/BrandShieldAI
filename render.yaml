@@ -1,0 +1,21 @@
+# ==============================================================================
+# BrandShield AI - Render Blueprint Deployment Configuration
+# Deploy at https://dashboard.render.com/blueprints
+# ==============================================================================
+services:
+  - type: web
+    name: brandshield-backend
+    env: python
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: DATABASE_URL
+        value: sqlite:///./brandshield.db

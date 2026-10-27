@@ -579,6 +579,7 @@ def list_reviews(limit: int = 50, db: Session = Depends(get_db)):
 
 # ---------------- Priority 6: Governance Analytics Endpoint ----------------
 @app.get("/reviews/analytics", response_model=AnalyticsSummaryResponse, tags=["Analytics"])
+@app.get("/api/reviews/analytics", response_model=AnalyticsSummaryResponse, tags=["Analytics"])
 @app.get("/api/analytics", response_model=AnalyticsSummaryResponse, tags=["Analytics"])
 def get_governance_analytics(db: Session = Depends(get_db)):
     """

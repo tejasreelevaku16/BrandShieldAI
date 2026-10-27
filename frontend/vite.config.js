@@ -15,6 +15,10 @@ export default defineConfig(({ mode }) => {
           target: backendTarget,
           changeOrigin: true,
         },
+        '/semantic-status': {
+          target: backendTarget,
+          changeOrigin: true,
+        },
         '/reviews': {
           target: backendTarget,
           changeOrigin: true,
