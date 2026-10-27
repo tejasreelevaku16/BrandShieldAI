@@ -73,7 +73,7 @@ APPROVED_FACTS: List[Dict[str, Any]] = [
         "fact_id": "FACT-PKG-01",
         "title": "Recycled Packaging Content",
         "statement": "AetherGlow products are made with 70% recycled packaging.",
-        "source_name": "AetherGlow Packaging Audit 2025",
+        "source_name": "AetherGlow sample brand facts",
         "approved_value": 70,
         "unit": "%",
         "explanation": "AetherGlow supply chain specifications certify exactly 70% post-consumer recycled content for primary packaging. Conflicting claims violate verified product specifications.",

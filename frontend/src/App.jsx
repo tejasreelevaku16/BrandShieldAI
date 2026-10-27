@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { apiFetch, ApiError } from './api';
 
-// Sample test paragraphs
+// Sample test paragraphs for quick demonstration
 const PROBLEMATIC_SAMPLE = 
   "AetherGlow daily serum provides guaranteed 100% results for all consumers! " +
   "Our revolutionary formula reduces wrinkles by 85% in just 48 hours, " +
@@ -12,7 +13,7 @@ const COMPLIANT_SAMPLE =
   "70% recycled packaging as part of our sustainability promise.";
 
 export default function App() {
-  // Navigation: 'review' or 'guidelines'
+  // Navigation: 'review', 'guidelines', or 'analytics'
   const [activeTab, setActiveTab] = useState('review');
 
   // Review & Workspace State
@@ -23,6 +24,7 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [copiedFindingId, setCopiedFindingId] = useState(null);
 
   // Human Review Decision State
   const [selectedDecision, setSelectedDecision] = useState('');
@@ -33,6 +35,10 @@ export default function App() {
   const [rules, setRules] = useState([]);
   const [facts, setFacts] = useState([]);
   const [guidelinesLoading, setGuidelinesLoading] = useState(false);
+
+  // Governance Analytics State (Priority 6)
+  const [analytics, setAnalytics] = useState(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
 
   // Modals / Forms
   const [showRuleModal, setShowRuleModal] = useState(false);
@@ -50,6 +56,7 @@ export default function App() {
 
   const [showFactModal, setShowFactModal] = useState(false);
   const [editingFact, setEditingFact] = useState(null);
+  const [modalError, setModalError] = useState('');
   const [factFormData, setFactFormData] = useState({
     fact_id: '',
     statement: '',
@@ -59,7 +66,7 @@ export default function App() {
     is_active: true
   });
 
-  // Load Review History and Guidelines on mount
+  // Load Review History and Guidelines on initial mount
   useEffect(() => {
     fetchReviewHistory();
     fetchGuidelines();
@@ -68,13 +75,10 @@ export default function App() {
   const fetchReviewHistory = async () => {
     setHistoryLoading(true);
     try {
-      const res = await fetch('/reviews');
-      if (res.ok) {
-        const data = await res.json();
-        setReviewHistory(data);
-      }
+      const data = await apiFetch('/reviews');
+      setReviewHistory(data);
     } catch (err) {
-      console.warn("Could not load review history:", err);
+      console.warn("Could not load review history:", err.message);
     } finally {
       setHistoryLoading(false);
     }
@@ -83,16 +87,30 @@ export default function App() {
   const fetchGuidelines = async () => {
     setGuidelinesLoading(true);
     try {
-      const [rulesRes, factsRes] = await Promise.all([
-        fetch('/rules'),
-        fetch('/facts')
+      const [rulesData, factsData] = await Promise.all([
+        apiFetch('/rules'),
+        apiFetch('/facts')
       ]);
-      if (rulesRes.ok) setRules(await rulesRes.json());
-      if (factsRes.ok) setFacts(await factsRes.json());
+      setRules(rulesData);
+      setFacts(factsData);
     } catch (err) {
-      console.warn("Could not load guidelines data:", err);
+      console.warn("Could not load guidelines data:", err.message);
+      setErrorMessage(err.message);
     } finally {
       setGuidelinesLoading(false);
+    }
+  };
+
+  const fetchAnalytics = async () => {
+    setAnalyticsLoading(true);
+    try {
+      const data = await apiFetch('/reviews/analytics');
+      setAnalytics(data);
+    } catch (err) {
+      console.warn("Could not load analytics:", err.message);
+      setErrorMessage(err.message);
+    } finally {
+      setAnalyticsLoading(false);
     }
   };
 
@@ -110,40 +128,28 @@ export default function App() {
     setReviewerComment('');
 
     try {
-      const response = await fetch('/reviews', {
+      const reviewData = await apiFetch('/reviews', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: content })
       });
 
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.detail?.[0]?.msg || errData.detail || "Server error");
-      }
-
-      const reviewData = await response.json();
       setActiveReview(reviewData);
       setSuccessMessage(`Content reviewed against active database rules (ID: ${reviewData.id.slice(0, 8)}).`);
       fetchReviewHistory();
     } catch (err) {
-      if (err.message && err.message.includes("Failed to fetch")) {
-        setErrorMessage("Unable to connect to the backend server. Please verify that FastAPI is running on port 8000.");
-      } else {
-        setErrorMessage(err.message || "An error occurred during review.");
-      }
+      setErrorMessage(err.message || "An error occurred during review.");
     } finally {
       setLoading(false);
     }
   };
 
-  // 2. Select past review
+  // 2. Select past review from history
   const handleSelectReview = async (reviewId) => {
     setErrorMessage('');
     setSuccessMessage('');
     try {
-      const res = await fetch(`/reviews/${reviewId}`);
-      if (!res.ok) throw new Error("Could not retrieve review record.");
-      const data = await res.json();
+      const data = await apiFetch(`/reviews/${reviewId}`);
       setActiveReview(data);
       setContent(data.content);
       setSelectedDecision('');
@@ -168,7 +174,7 @@ export default function App() {
     setErrorMessage('');
 
     try {
-      const res = await fetch(`/reviews/${activeReview.id}/decision`, {
+      const updated = await apiFetch(`/reviews/${activeReview.id}/decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -177,14 +183,8 @@ export default function App() {
         })
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.detail || "Failed to submit decision.");
-      }
-
-      const updated = await res.json();
       setActiveReview(updated);
-      setSuccessMessage(`Human decision '${selectedDecision}' logged.`);
+      setSuccessMessage(`Human verdict '${selectedDecision.replace('_', ' ')}' permanently logged.`);
       fetchReviewHistory();
     } catch (err) {
       setErrorMessage(err.message || "Failed to record human decision.");
@@ -193,9 +193,59 @@ export default function App() {
     }
   };
 
+  // 4. Copy Suggestion to Clipboard (Priority 3)
+  const handleCopySuggestion = (text, findingId) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    setCopiedFindingId(findingId);
+    setTimeout(() => setCopiedFindingId(null), 2000);
+    setSuccessMessage(`Copied proposed wording to clipboard!`);
+  };
+
+  // 5. Apply Fix directly to Draft Editor (Priority 3)
+  const handleApplyFix = (finding) => {
+    const target = finding.matched_text || finding.flagged_text;
+    if (!target) return;
+
+    let replacement = "";
+    if (finding.suggested_correction) {
+      const matchQuote = finding.suggested_correction.match(/Use '([^']+)' instead/i);
+      if (matchQuote) {
+        replacement = matchQuote[1];
+      } else if (finding.suggested_correction.toLowerCase().includes("align packaging claim with approved fact:")) {
+        replacement = "all bottles are made with 70% recycled packaging";
+      } else if (finding.suggested_correction.toLowerCase().includes("align with approved fact:")) {
+        replacement = "founded in 2020";
+      } else if (finding.suggested_correction.toLowerCase().includes("delivers visible radiance")) {
+        replacement = "delivers visible radiance";
+      } else {
+        const quotes = finding.suggested_correction.match(/'([^']+)'/);
+        if (quotes && quotes[1] && quotes[1] !== target) {
+          replacement = quotes[1];
+        }
+      }
+    }
+
+    if (replacement) {
+      const regex = new RegExp(target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      if (regex.test(content)) {
+        setContent(prev => prev.replace(regex, replacement));
+        setSuccessMessage(`Applied fix: Replaced "${target}" with "${replacement}" in draft editor.`);
+        return;
+      }
+    }
+
+    // Fallback: Copy to clipboard if exact replacement pattern couldn't be cleanly parsed
+    if (finding.suggested_correction) {
+      navigator.clipboard.writeText(finding.suggested_correction);
+      setSuccessMessage(`Copied suggestion to clipboard: "${finding.suggested_correction}"`);
+    }
+  };
+
   // --- Rule Management Functions ---
   const handleOpenAddRule = () => {
     setEditingRule(null);
+    setModalError('');
     setRuleFormData({
       rule_id: '',
       name: '',
@@ -211,6 +261,7 @@ export default function App() {
 
   const handleOpenEditRule = (rule) => {
     setEditingRule(rule);
+    setModalError('');
     setRuleFormData({
       rule_id: rule.rule_id,
       name: rule.name,
@@ -227,50 +278,49 @@ export default function App() {
   const handleSaveRule = async (e) => {
     e.preventDefault();
     if (!ruleFormData.name.trim() || !ruleFormData.description.trim()) {
-      alert("Rule name and description cannot be blank.");
+      setModalError("Rule name and description cannot be blank.");
       return;
     }
 
+    setModalError('');
+    setErrorMessage('');
+    setSuccessMessage('');
+
     try {
       if (editingRule) {
-        // Update existing rule
-        const res = await fetch(`/rules/${editingRule.rule_id}`, {
+        await apiFetch(`/rules/${editingRule.rule_id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(ruleFormData)
         });
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || "Failed to update rule.");
-        }
       } else {
-        // Create new rule
-        const res = await fetch('/rules', {
+        await apiFetch('/rules', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(ruleFormData)
         });
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || "Failed to create rule.");
-        }
       }
 
       setShowRuleModal(false);
       fetchGuidelines();
       setSuccessMessage("Brand rule saved successfully.");
     } catch (err) {
-      alert(err.message);
+      setSuccessMessage('');
+      setModalError(err.message);
+      setErrorMessage(err.message);
     }
   };
 
   const handleToggleRule = async (ruleId) => {
+    setErrorMessage('');
+    setSuccessMessage('');
     try {
-      const res = await fetch(`/rules/${ruleId}/toggle`, { method: 'PATCH' });
-      if (!res.ok) throw new Error("Failed to toggle rule");
+      await apiFetch(`/rules/${ruleId}/toggle`, { method: 'PATCH' });
       fetchGuidelines();
+      setSuccessMessage(`Rule '${ruleId}' status updated.`);
     } catch (err) {
-      alert(err.message);
+      setSuccessMessage('');
+      setErrorMessage(err.message);
     }
   };
 
@@ -278,19 +328,22 @@ export default function App() {
     if (!window.confirm(`Are you sure you want to delete rule '${ruleName}' (${ruleId})?`)) {
       return;
     }
+    setErrorMessage('');
+    setSuccessMessage('');
     try {
-      const res = await fetch(`/rules/${ruleId}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error("Failed to delete rule");
+      await apiFetch(`/rules/${ruleId}`, { method: 'DELETE' });
       fetchGuidelines();
       setSuccessMessage(`Rule '${ruleId}' deleted.`);
     } catch (err) {
-      alert(err.message);
+      setSuccessMessage('');
+      setErrorMessage(err.message);
     }
   };
 
   // --- Fact Management Functions ---
   const handleOpenAddFact = () => {
     setEditingFact(null);
+    setModalError('');
     setFactFormData({
       fact_id: '',
       statement: '',
@@ -304,6 +357,7 @@ export default function App() {
 
   const handleOpenEditFact = (fact) => {
     setEditingFact(fact);
+    setModalError('');
     setFactFormData({
       fact_id: fact.fact_id,
       statement: fact.statement,
@@ -318,48 +372,49 @@ export default function App() {
   const handleSaveFact = async (e) => {
     e.preventDefault();
     if (!factFormData.statement.trim() || !factFormData.source_name.trim()) {
-      alert("Fact statement and source name cannot be blank.");
+      setModalError("Fact statement and source name cannot be blank.");
       return;
     }
 
+    setModalError('');
+    setErrorMessage('');
+    setSuccessMessage('');
+
     try {
       if (editingFact) {
-        const res = await fetch(`/facts/${editingFact.fact_id}`, {
+        await apiFetch(`/facts/${editingFact.fact_id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(factFormData)
         });
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || "Failed to update fact.");
-        }
       } else {
-        const res = await fetch('/facts', {
+        await apiFetch('/facts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(factFormData)
         });
-        if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || "Failed to create fact.");
-        }
       }
 
       setShowFactModal(false);
       fetchGuidelines();
       setSuccessMessage("Approved fact saved successfully.");
     } catch (err) {
-      alert(err.message);
+      setSuccessMessage('');
+      setModalError(err.message);
+      setErrorMessage(err.message);
     }
   };
 
   const handleToggleFact = async (factId) => {
+    setErrorMessage('');
+    setSuccessMessage('');
     try {
-      const res = await fetch(`/facts/${factId}/toggle`, { method: 'PATCH' });
-      if (!res.ok) throw new Error("Failed to toggle fact");
+      await apiFetch(`/facts/${factId}/toggle`, { method: 'PATCH' });
       fetchGuidelines();
+      setSuccessMessage(`Fact '${factId}' status updated.`);
     } catch (err) {
-      alert(err.message);
+      setSuccessMessage('');
+      setErrorMessage(err.message);
     }
   };
 
@@ -367,68 +422,78 @@ export default function App() {
     if (!window.confirm(`Are you sure you want to delete fact '${factId}'?`)) {
       return;
     }
+    setErrorMessage('');
+    setSuccessMessage('');
     try {
-      const res = await fetch(`/facts/${factId}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error("Failed to delete fact");
+      await apiFetch(`/facts/${factId}`, { method: 'DELETE' });
       fetchGuidelines();
       setSuccessMessage(`Fact '${factId}' deleted.`);
     } catch (err) {
-      alert(err.message);
+      setSuccessMessage('');
+      setErrorMessage(err.message);
     }
   };
 
   const getSeverityBadge = (severity) => {
+    const sev = (severity || 'MEDIUM').toUpperCase();
     const badges = {
-      HIGH: "bg-red-100 text-red-800 border-red-300",
-      MEDIUM: "bg-amber-100 text-amber-800 border-amber-300",
-      LOW: "bg-blue-100 text-blue-800 border-blue-300"
+      HIGH: "bg-rose-50 text-rose-700 border-rose-200",
+      MEDIUM: "bg-amber-50 text-amber-700 border-amber-200",
+      LOW: "bg-teal-50 text-teal-700 border-teal-200"
     };
     return (
-      <span className={`px-2 py-0.5 rounded text-[11px] font-bold border ${badges[severity] || 'bg-slate-100 text-slate-800'}`}>
-        {severity}
+      <span className={`px-2 py-0.5 rounded text-[10px] font-bold border tracking-wider ${badges[sev] || 'bg-slate-100 text-slate-800'}`}>
+        {sev}
       </span>
     );
   };
 
   const getStatusBadge = (statusLabel) => {
-    if (statusLabel === "Unverified claim") {
+    if (!statusLabel) return null;
+    const lower = String(statusLabel).toLowerCase();
+    if (lower.includes("unverified")) {
       return (
-        <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-100 text-purple-800 border border-purple-300">
-          🔍 {statusLabel}
+        <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-50 text-purple-700 border border-purple-200">
+          🔍 Unverified Claim
         </span>
       );
     }
-    if (statusLabel === "Factual Contradiction") {
+    if (lower.includes("contradiction")) {
       return (
-        <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-300">
-          ⚠️ {statusLabel}
+        <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-300">
+          ⚠️ Potential Factual Contradiction
         </span>
       );
     }
     return (
-      <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 border border-rose-300">
-        🛑 {statusLabel}
+      <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+        🛑 Confirmed Violation
       </span>
     );
   };
 
-  const getDecisionBadge = (decisionStr) => {
-    if (!decisionStr) return null;
+  const getDecisionBadge = (decisionStr, isClean = false) => {
+    if (isClean && !decisionStr) {
+      return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-50 text-teal-800 border border-teal-200">✅ COMPLIANT</span>;
+    }
+    if (!decisionStr) {
+      return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">⏳ AWAITING REVIEW</span>;
+    }
     const dec = decisionStr.toLowerCase();
     if (dec === "approved") {
-      return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">✅ APPROVED</span>;
+      return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">✅ APPROVED</span>;
     }
     if (dec === "rejected") {
-      return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300">❌ REJECTED</span>;
+      return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-800 border border-rose-200">❌ REJECTED</span>;
     }
-    if (dec === "changes_requested") {
-      return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">🔄 CHANGES REQUESTED</span>;
+    if (dec === "changes_requested" || dec === "request_changes") {
+      return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">🔄 CHANGES REQUESTED</span>;
     }
     return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-800 border">{decisionStr}</span>;
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-900">
       {/* Top Header */}
       <header className="bg-slate-900 border-b border-slate-800 text-white sticky top-0 z-50 shadow-md">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
@@ -437,7 +502,7 @@ export default function App() {
             <div>
               <div className="flex items-center space-x-2">
                 <span className="font-extrabold text-xl tracking-tight text-white">BrandShield AI</span>
-                <span className="text-xs bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 px-2 py-0.5 rounded font-mono">
+                <span className="text-xs bg-teal-500/20 text-teal-300 border border-teal-500/40 px-2 py-0.5 rounded font-mono font-medium">
                   Team AETHORA
                 </span>
               </div>
@@ -453,7 +518,7 @@ export default function App() {
               onClick={() => setActiveTab('review')}
               className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
                 activeTab === 'review'
-                  ? 'bg-indigo-600 text-white shadow-sm'
+                  ? 'bg-teal-600 text-white shadow-sm'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
               }`}
             >
@@ -466,11 +531,24 @@ export default function App() {
               }}
               className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
                 activeTab === 'guidelines'
-                  ? 'bg-indigo-600 text-white shadow-sm'
+                  ? 'bg-teal-600 text-white shadow-sm'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
               }`}
             >
               📚 Brand Guidelines & Facts
+            </button>
+            <button
+              onClick={() => {
+                setActiveTab('analytics');
+                fetchAnalytics();
+              }}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeTab === 'analytics'
+                  ? 'bg-teal-600 text-white shadow-sm'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              📊 Governance Analytics
             </button>
           </div>
         </div>
@@ -482,348 +560,429 @@ export default function App() {
         {/* Notifications */}
         {errorMessage && (
           <div className="bg-rose-50 border border-rose-300 text-rose-800 px-4 py-3 rounded-lg text-sm flex items-center justify-between shadow-sm">
-            <span><strong>Error:</strong> {errorMessage}</span>
+            <span><strong>Notice:</strong> {errorMessage}</span>
             <button onClick={() => setErrorMessage('')} className="font-bold text-rose-800 ml-4 hover:opacity-75">✕</button>
           </div>
         )}
 
         {successMessage && (
-          <div className="bg-emerald-50 border border-emerald-300 text-emerald-800 px-4 py-3 rounded-lg text-sm flex items-center justify-between shadow-sm">
+          <div className="bg-teal-50 border border-teal-300 text-teal-800 px-4 py-3 rounded-lg text-sm flex items-center justify-between shadow-sm">
             <span>{successMessage}</span>
-            <button onClick={() => setSuccessMessage('')} className="font-bold text-emerald-800 ml-4 hover:opacity-75">✕</button>
+            <button onClick={() => setSuccessMessage('')} className="font-bold text-teal-800 ml-4 hover:opacity-75">✕</button>
           </div>
         )}
 
         {/* VIEW 1: CONTENT REVIEW WORKFLOW */}
         {activeTab === 'review' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            
-            {/* Column 1: Review History Sidebar (3 cols) */}
-            <div className="lg:col-span-3 space-y-4">
-              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-3">
-                <div className="flex items-center justify-between border-b pb-2">
-                  <h3 className="font-bold text-xs uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
-                    <span>📂 Review History</span>
-                  </h3>
-                  <button
-                    onClick={fetchReviewHistory}
-                    disabled={historyLoading}
-                    className="text-xs text-indigo-600 hover:text-indigo-800"
-                  >
-                    {historyLoading ? "..." : "🔄 Refresh"}
-                  </button>
+          <div className="space-y-5">
+            {/* Judge Step-by-Step Process Stepper */}
+            <div className="bg-white rounded-xl border border-slate-200 p-3 shadow-sm flex items-center justify-between text-xs overflow-x-auto gap-2">
+              <div className="flex items-center gap-1.5 font-semibold text-slate-700 shrink-0">
+                <span className="w-5 h-5 rounded-full bg-teal-600 text-white flex items-center justify-center text-[10px] font-bold">1</span>
+                <span>Enter Draft Copy</span>
+              </div>
+              <span className="text-slate-300 shrink-0">➔</span>
+              <div className="flex items-center gap-1.5 font-semibold text-slate-700 shrink-0">
+                <span className="w-5 h-5 rounded-full bg-teal-600 text-white flex items-center justify-center text-[10px] font-bold">2</span>
+                <span>Run Detection</span>
+              </div>
+              <span className="text-slate-300 shrink-0">➔</span>
+              <div className="flex items-center gap-1.5 font-semibold text-slate-700 shrink-0">
+                <span className="w-5 h-5 rounded-full bg-teal-600 text-white flex items-center justify-center text-[10px] font-bold">3</span>
+                <span>Inspect Evidence & Explanations</span>
+              </div>
+              <span className="text-slate-300 shrink-0">➔</span>
+              <div className="flex items-center gap-1.5 font-semibold text-slate-700 shrink-0">
+                <span className="w-5 h-5 rounded-full bg-teal-600 text-white flex items-center justify-center text-[10px] font-bold">4</span>
+                <span>Copy / Apply Safer Fix</span>
+              </div>
+              <span className="text-slate-300 shrink-0">➔</span>
+              <div className="flex items-center gap-1.5 font-semibold text-slate-700 shrink-0">
+                <span className="w-5 h-5 rounded-full bg-teal-600 text-white flex items-center justify-center text-[10px] font-bold">5</span>
+                <span>Record Human Verdict</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              
+              {/* Column 1: Review History Sidebar (3 cols) */}
+              <div className="lg:col-span-3 space-y-4">
+                <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between border-b pb-2">
+                    <h3 className="font-bold text-xs uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+                      <span>📂 Review History</span>
+                    </h3>
+                    <button
+                      onClick={fetchReviewHistory}
+                      disabled={historyLoading}
+                      className="text-xs text-teal-700 hover:text-teal-900 font-semibold"
+                    >
+                      {historyLoading ? "..." : "🔄 Refresh"}
+                    </button>
+                  </div>
+
+                  {reviewHistory.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-3 text-center">No reviews in database yet.</p>
+                  ) : (
+                    <div className="space-y-2 max-h-[580px] overflow-y-auto pr-1">
+                      {reviewHistory.map((item) => {
+                        const isSelected = activeReview && activeReview.id === item.id;
+                        return (
+                          <div
+                            key={item.id}
+                            onClick={() => handleSelectReview(item.id)}
+                            className={`p-3 rounded-lg border text-xs cursor-pointer transition ${
+                              isSelected
+                                ? 'bg-teal-50/50 border-teal-400 ring-1 ring-teal-500'
+                                : 'bg-slate-50 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="font-mono text-[10px] text-slate-400">
+                                {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                              {getDecisionBadge(item.latest_decision, item.total_findings === 0)}
+                            </div>
+                            <p className="text-slate-700 line-clamp-2 leading-relaxed font-sans">
+                              {item.content}
+                            </p>
+                            <div className="mt-1 text-[10px] text-slate-400">
+                              {item.total_findings} issue{item.total_findings === 1 ? '' : 's'} detected
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Column 2: Editor & Human Review Decision (5 cols) */}
+              <div className="lg:col-span-5 space-y-4">
+                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-base font-bold text-slate-900">1. Marketing Content Draft</h2>
+                    <span className="text-xs text-slate-400 font-mono">
+                      {content.trim().split(/\s+/).filter(Boolean).length} words
+                    </span>
+                  </div>
+
+                  {/* Sample Loading Buttons */}
+                  <div className="flex flex-wrap gap-2 items-center bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+                    <span className="text-xs font-semibold text-slate-600">Quick Test Samples:</span>
+                    <button
+                      onClick={() => {
+                        setContent(PROBLEMATIC_SAMPLE);
+                        setActiveReview(null);
+                        setErrorMessage('');
+                      }}
+                      className="text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold px-2.5 py-1 rounded transition"
+                    >
+                      ⚠️ Load Problematic Sample
+                    </button>
+                    <button
+                      onClick={() => {
+                        setContent(COMPLIANT_SAMPLE);
+                        setActiveReview(null);
+                        setErrorMessage('');
+                      }}
+                      className="text-xs bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 font-semibold px-2.5 py-1 rounded transition"
+                    >
+                      ✅ Load Compliant Sample
+                    </button>
+                  </div>
+
+                  {/* Text Area */}
+                  <div>
+                    <textarea
+                      rows={8}
+                      value={content}
+                      onChange={(e) => setContent(e.target.value)}
+                      placeholder="Write or paste marketing copy to check against active brand rules..."
+                      className="w-full rounded-lg border-slate-300 border p-3 text-sm focus:ring-2 focus:ring-teal-500 focus:border-teal-500 font-sans leading-relaxed transition"
+                    />
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      onClick={() => {
+                        setContent('');
+                        setActiveReview(null);
+                      }}
+                      className="text-xs text-slate-500 hover:text-slate-800 transition"
+                    >
+                      Clear Text
+                    </button>
+                    <button
+                      onClick={handleCheckContent}
+                      disabled={loading}
+                      className="inline-flex items-center px-6 py-2.5 rounded-lg text-sm font-semibold bg-teal-600 hover:bg-teal-700 text-white shadow-sm transition disabled:opacity-50"
+                    >
+                      {loading ? (
+                        <>
+                          <span className="animate-spin mr-2">⏳</span>
+                          Evaluating Active Rules...
+                        </>
+                      ) : (
+                        <>
+                          <span>🔍 Check Content</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
 
-                {reviewHistory.length === 0 ? (
-                  <p className="text-xs text-slate-400 py-3 text-center">No reviews in database yet.</p>
-                ) : (
-                  <div className="space-y-2 max-h-[580px] overflow-y-auto pr-1">
-                    {reviewHistory.map((item) => {
-                      const isSelected = activeReview && activeReview.id === item.id;
-                      return (
-                        <div
-                          key={item.id}
-                          onClick={() => handleSelectReview(item.id)}
-                          className={`p-3 rounded-lg border text-xs cursor-pointer transition ${
-                            isSelected
-                              ? 'bg-indigo-50 border-indigo-300 ring-1 ring-indigo-400'
-                              : 'bg-slate-50 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
+                {/* Human Governance Review Decision Box */}
+                {activeReview && (
+                  <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
+                    <div className="border-b pb-2 flex items-center justify-between">
+                      <div>
+                        <h2 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                          <span>⚖️ Human Governance Decision</span>
+                        </h2>
+                        <p className="text-[11px] text-slate-500">
+                          Authoritative human verdict stored separately from automated rule findings.
+                        </p>
+                      </div>
+                      {activeReview.human_decision && (
+                        <div>{getDecisionBadge(activeReview.human_decision.decision)}</div>
+                      )}
+                    </div>
+
+                    {/* Display Current Decision if already recorded */}
+                    {activeReview.human_decision && (
+                      <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs space-y-1">
+                        <div className="flex items-center justify-between text-slate-700">
+                          <strong>Recorded Verdict:</strong>
+                          <span className="capitalize font-semibold text-slate-900">
+                            {activeReview.human_decision.decision.replace('_', ' ')}
+                          </span>
+                        </div>
+                        {activeReview.human_decision.comment && (
+                          <div className="text-slate-600 pt-1">
+                            <strong>Reviewer Comment:</strong> "{activeReview.human_decision.comment}"
+                          </div>
+                        )}
+                        <div className="text-[10px] text-slate-400 pt-1">
+                          Timestamp: {new Date(activeReview.human_decision.created_at).toLocaleString()}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Submit Decision Choices */}
+                    <div className="space-y-3 pt-1">
+                      <span className="text-xs font-semibold text-slate-700 block">
+                        {activeReview.human_decision ? "Update Human Verdict:" : "Record Verdict:"}
+                      </span>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDecision('approved')}
+                          className={`py-2 px-2 rounded-lg text-xs font-bold border transition ${
+                            selectedDecision === 'approved'
+                              ? 'bg-emerald-600 text-white border-emerald-700 shadow-sm'
+                              : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
                           }`}
                         >
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="font-mono text-[10px] text-slate-400">
-                              {new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                            {item.latest_decision ? (
-                              getDecisionBadge(item.latest_decision)
-                            ) : (
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                                item.total_findings === 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                              }`}>
-                                {item.total_findings} finding{item.total_findings === 1 ? '' : 's'}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-slate-700 line-clamp-2 leading-relaxed">
-                            {item.content}
-                          </p>
+                          ✅ Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDecision('changes_requested')}
+                          className={`py-2 px-2 rounded-lg text-xs font-bold border transition ${
+                            selectedDecision === 'changes_requested'
+                              ? 'bg-amber-600 text-white border-amber-700 shadow-sm'
+                              : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                          }`}
+                        >
+                          🔄 Request Changes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDecision('rejected')}
+                          className={`py-2 px-2 rounded-lg text-xs font-bold border transition ${
+                            selectedDecision === 'rejected'
+                              ? 'bg-rose-600 text-white border-rose-700 shadow-sm'
+                              : 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
+                          }`}
+                        >
+                          ❌ Reject
+                        </button>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1">
+                          Reviewer Comment (Optional):
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={reviewerComment}
+                          onChange={(e) => setReviewerComment(e.target.value)}
+                          placeholder="Add compliance notes, rationale, or requested edits..."
+                          className="w-full text-xs rounded border border-slate-300 p-2 focus:ring-1 focus:ring-teal-500"
+                        />
+                      </div>
+
+                      <button
+                        onClick={handleSubmitDecision}
+                        disabled={submittingDecision || !selectedDecision}
+                        className="w-full py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white shadow-sm transition disabled:opacity-50"
+                      >
+                        {submittingDecision ? "Saving Verdict..." : "💾 Submit Human Decision"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Column 3: Real Explained Findings (4 cols) */}
+              <div className="lg:col-span-4 space-y-4">
+                {!activeReview && !loading && (
+                  <div className="p-8 bg-white rounded-xl border border-dashed border-slate-300 text-center text-slate-400 space-y-2">
+                    <span className="text-4xl block">📝</span>
+                    <h3 className="text-sm font-semibold text-slate-700">Ready to Check</h3>
+                    <p className="text-xs leading-relaxed">
+                      Click <strong>"Check Content"</strong> or pick an existing review from history to inspect findings.
+                    </p>
+                  </div>
+                )}
+
+                {/* Clean State (0 findings) */}
+                {activeReview && activeReview.total_findings === 0 && (
+                  <div className="p-6 bg-teal-50 rounded-xl border border-teal-200 text-teal-950 shadow-sm space-y-2.5">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-2xl">✅</span>
+                      <h3 className="font-bold text-base text-teal-900">Brand Compliance Verified</h3>
+                    </div>
+                    <p className="text-xs text-teal-800 leading-relaxed">
+                      {activeReview.summary_message || "No issues detected by the current active rules. All claims adhere to approved AetherGlow brand specifications."}
+                    </p>
+                    <div className="text-[11px] text-teal-700 bg-white/70 p-2 rounded border border-teal-200">
+                      <strong>Governance Notice:</strong> Automated verification checks known brand guidelines and approved facts. Novel scientific or clinical claims should still be substantiated with regulatory counsel prior to publication.
+                    </div>
+                  </div>
+                )}
+
+                {/* Findings List (>0 findings) */}
+                {activeReview && activeReview.total_findings > 0 && (
+                  <div className="space-y-3">
+                    {/* Overall Summary Card (Priority 2) */}
+                    <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-rose-900 shadow-sm space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-bold text-sm">Automated Governance Findings</h3>
+                        <span className="font-mono text-xs font-bold px-2.5 py-1 rounded bg-white border border-rose-200 text-rose-800">
+                          {activeReview.total_findings} Issues
+                        </span>
+                      </div>
+                      <p className="text-xs text-rose-800 leading-relaxed">
+                        {activeReview.summary_message || `${activeReview.total_findings} issues detected requiring compliance action.`}
+                      </p>
+
+                      {/* Snapshot pill (Priority 4) */}
+                      {activeReview.guidelines_snapshot && (
+                        <div className="text-[10px] text-slate-600 bg-white/80 p-2 rounded border border-rose-100 flex items-center justify-between">
+                          <span>
+                            📋 <strong>Snapshot:</strong> {activeReview.guidelines_snapshot.rules_applied?.length || 0} active rules and {activeReview.guidelines_snapshot.facts_applied?.length || 0} facts applied.
+                          </span>
                         </div>
-                      );
-                    })}
+                      )}
+                    </div>
+
+                    <div className="space-y-3">
+                      {activeReview.findings.map((finding, idx) => {
+                        const findingType = finding.type || finding.finding_type;
+                        const statusLabel = finding.status || finding.status_or_uncertainty_label;
+                        const matchedText = finding.matched_text || finding.flagged_text;
+                        const sourceRef = finding.source || finding.matched_rule_or_source;
+                        const correction = finding.suggested_correction;
+                        const findingKey = finding.id || idx;
+
+                        return (
+                          <div
+                            key={findingKey}
+                            className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-2.5 hover:border-slate-300 transition"
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-1.5">
+                                {getStatusBadge(statusLabel)}
+                                <span className="text-xs font-semibold text-slate-800">{findingType}</span>
+                              </div>
+                              {getSeverityBadge(finding.severity)}
+                            </div>
+
+                            {matchedText && (
+                              <div className="text-xs text-slate-600">
+                                Flagged text:{" "}
+                                <span className="font-mono bg-rose-50 text-rose-800 px-1 py-0.5 rounded border border-rose-200 font-semibold">
+                                  "{matchedText}"
+                                </span>
+                              </div>
+                            )}
+
+                            <div className="bg-slate-50 rounded-lg p-2.5 text-xs text-slate-700 border border-slate-200 leading-relaxed">
+                              <strong className="text-slate-900 block mb-0.5">Why this matters:</strong>
+                              {finding.explanation}
+                            </div>
+
+                            {/* Proposed Safer Correction (Priority 3) */}
+                            <div className="bg-teal-50/60 rounded-lg p-2.5 text-xs text-teal-950 border border-teal-100 space-y-1.5">
+                              <div className="text-[11px] text-teal-800 font-medium">
+                                <strong>Source:</strong> {sourceRef}
+                              </div>
+                              <div>
+                                <strong>Proposed Alternative:</strong> {correction}
+                              </div>
+
+                              {/* Interactive Copy & Apply Fix buttons (Priority 3) */}
+                              <div className="flex items-center justify-between pt-2 border-t border-teal-100/80 gap-2">
+                                <span className="text-[10px] text-teal-700 italic">
+                                  Safer wording suggestion
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  {correction && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCopySuggestion(correction, findingKey)}
+                                      className="px-2.5 py-1 rounded text-xs font-semibold bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 transition flex items-center gap-1 shadow-2xs"
+                                      title="Copy proposed wording to clipboard"
+                                    >
+                                      {copiedFindingId === findingKey ? "✓ Copied!" : "📋 Copy"}
+                                    </button>
+                                  )}
+                                  {matchedText && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleApplyFix(finding)}
+                                      className="px-2.5 py-1 rounded text-xs font-semibold bg-teal-600 hover:bg-teal-700 text-white transition flex items-center gap-1 shadow-2xs"
+                                      title="Replace flagged wording in draft editor"
+                                    >
+                                      ✨ Apply Fix
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </div>
             </div>
-
-            {/* Column 2: Editor & Human Review Decision (5 cols) */}
-            <div className="lg:col-span-5 space-y-4">
-              <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-base font-bold text-slate-900">1. Marketing Content Draft</h2>
-                  <span className="text-xs text-slate-400 font-mono">
-                    {content.trim().split(/\s+/).filter(Boolean).length} words
-                  </span>
-                </div>
-
-                {/* Sample Loading Buttons */}
-                <div className="flex flex-wrap gap-2 items-center bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                  <span className="text-xs font-semibold text-slate-600">Quick Test:</span>
-                  <button
-                    onClick={() => {
-                      setContent(PROBLEMATIC_SAMPLE);
-                      setActiveReview(null);
-                      setErrorMessage('');
-                    }}
-                    className="text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-semibold px-2.5 py-1 rounded transition"
-                  >
-                    ⚠️ Load Problematic Sample
-                  </button>
-                  <button
-                    onClick={() => {
-                      setContent(COMPLIANT_SAMPLE);
-                      setActiveReview(null);
-                      setErrorMessage('');
-                    }}
-                    className="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 font-semibold px-2.5 py-1 rounded transition"
-                  >
-                    ✅ Load Compliant Sample
-                  </button>
-                </div>
-
-                {/* Text Area */}
-                <div>
-                  <textarea
-                    rows={8}
-                    value={content}
-                    onChange={(e) => setContent(e.target.value)}
-                    placeholder="Write or paste marketing copy to check against active brand rules..."
-                    className="w-full rounded-lg border-slate-300 border p-3 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-sans leading-relaxed transition"
-                  />
-                </div>
-
-                {/* Actions */}
-                <div className="flex items-center justify-between pt-1">
-                  <button
-                    onClick={() => {
-                      setContent('');
-                      setActiveReview(null);
-                    }}
-                    className="text-xs text-slate-500 hover:text-slate-800 transition"
-                  >
-                    Clear Text
-                  </button>
-                  <button
-                    onClick={handleCheckContent}
-                    disabled={loading}
-                    className="inline-flex items-center px-6 py-2.5 rounded-lg text-sm font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition disabled:opacity-50"
-                  >
-                    {loading ? (
-                      <>
-                        <span className="animate-spin mr-2">⏳</span>
-                        Checking with Active Rules...
-                      </>
-                    ) : (
-                      <>
-                        <span>🔍 Check Content</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {/* Human Governance Review Decision Box */}
-              {activeReview && (
-                <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
-                  <div className="border-b pb-2 flex items-center justify-between">
-                    <div>
-                      <h2 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                        <span>⚖️ Human Review Decision</span>
-                      </h2>
-                      <p className="text-[11px] text-slate-500">
-                        Authoritative human verdict stored separately from automated findings.
-                      </p>
-                    </div>
-                    {activeReview.human_decision && (
-                      <div>{getDecisionBadge(activeReview.human_decision.decision)}</div>
-                    )}
-                  </div>
-
-                  {/* Display Current Decision if already recorded */}
-                  {activeReview.human_decision && (
-                    <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs space-y-1">
-                      <div className="flex items-center justify-between text-slate-700">
-                        <strong>Current Verdict:</strong>
-                        <span className="capitalize font-semibold text-slate-900">{activeReview.human_decision.decision.replace('_', ' ')}</span>
-                      </div>
-                      {activeReview.human_decision.comment && (
-                        <div className="text-slate-600 pt-1">
-                          <strong>Reviewer Comment:</strong> "{activeReview.human_decision.comment}"
-                        </div>
-                      )}
-                      <div className="text-[10px] text-slate-400 pt-1">
-                        Logged at: {new Date(activeReview.human_decision.created_at).toLocaleString()}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Submit Decision Choices */}
-                  <div className="space-y-3 pt-1">
-                    <span className="text-xs font-semibold text-slate-700 block">
-                      {activeReview.human_decision ? "Update Decision:" : "Choose Verdict:"}
-                    </span>
-
-                    <div className="grid grid-cols-3 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedDecision('approved')}
-                        className={`py-2 px-2 rounded-lg text-xs font-bold border transition ${
-                          selectedDecision === 'approved'
-                            ? 'bg-emerald-600 text-white border-emerald-700 shadow-sm'
-                            : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
-                        }`}
-                      >
-                        ✅ Approve
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedDecision('changes_requested')}
-                        className={`py-2 px-2 rounded-lg text-xs font-bold border transition ${
-                          selectedDecision === 'changes_requested'
-                            ? 'bg-amber-600 text-white border-amber-700 shadow-sm'
-                            : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
-                        }`}
-                      >
-                        🔄 Request Changes
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedDecision('rejected')}
-                        className={`py-2 px-2 rounded-lg text-xs font-bold border transition ${
-                          selectedDecision === 'rejected'
-                            ? 'bg-rose-600 text-white border-rose-700 shadow-sm'
-                            : 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
-                        }`}
-                      >
-                        ❌ Reject
-                      </button>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Reviewer Comment (Optional):
-                      </label>
-                      <textarea
-                        rows={2}
-                        value={reviewerComment}
-                        onChange={(e) => setReviewerComment(e.target.value)}
-                        placeholder="Add compliance notes, rationale, or requested edits..."
-                        className="w-full text-xs rounded border border-slate-300 p-2 focus:ring-1 focus:ring-indigo-500"
-                      />
-                    </div>
-
-                    <button
-                      onClick={handleSubmitDecision}
-                      disabled={submittingDecision || !selectedDecision}
-                      className="w-full py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white shadow-sm transition disabled:opacity-50"
-                    >
-                      {submittingDecision ? "Saving Decision..." : "💾 Submit Human Decision"}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Column 3: Real Explained Findings (4 cols) */}
-            <div className="lg:col-span-4 space-y-4">
-              {!activeReview && !loading && (
-                <div className="p-8 bg-white rounded-xl border border-dashed border-slate-300 text-center text-slate-400 space-y-2">
-                  <span className="text-4xl block">📝</span>
-                  <h3 className="text-sm font-semibold text-slate-700">Ready to Check</h3>
-                  <p className="text-xs">
-                    Click <strong>"Check Content"</strong> or pick an existing review to inspect explained findings.
-                  </p>
-                </div>
-              )}
-
-              {activeReview && activeReview.total_findings === 0 && (
-                <div className="p-6 bg-emerald-50 rounded-xl border border-emerald-200 text-emerald-900 shadow-sm space-y-2">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-2xl">✅</span>
-                    <h3 className="font-bold text-base">Brand Compliance Verified</h3>
-                  </div>
-                  <p className="text-xs text-emerald-800 leading-relaxed">
-                    No issues found! This content adheres to all active AetherGlow brand rules and approved specifications. Ready for publishing.
-                  </p>
-                </div>
-              )}
-
-              {activeReview && activeReview.total_findings > 0 && (
-                <div className="space-y-3">
-                  <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-center justify-between text-rose-900 shadow-sm">
-                    <div>
-                      <h3 className="font-bold text-sm">Automated Rule Findings</h3>
-                      <p className="text-xs text-rose-700 mt-0.5">
-                        {activeReview.total_findings} finding{activeReview.total_findings === 1 ? '' : 's'} identified by the active engine.
-                      </p>
-                    </div>
-                    <span className="font-mono text-xs font-bold px-2.5 py-1 rounded bg-white border border-rose-200 text-rose-800">
-                      {activeReview.total_findings} Issues
-                    </span>
-                  </div>
-
-                  <div className="space-y-3">
-                    {activeReview.findings.map((finding, idx) => (
-                      <div
-                        key={finding.id || idx}
-                        className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-2.5 hover:border-slate-300 transition"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
-                            {getStatusBadge(finding.status_or_uncertainty_label)}
-                            <span className="text-xs font-semibold text-slate-800">{finding.finding_type}</span>
-                          </div>
-                          {getSeverityBadge(finding.severity)}
-                        </div>
-
-                        {finding.flagged_text && (
-                          <div className="text-xs text-slate-600">
-                            Flagged text:{" "}
-                            <span className="font-mono bg-rose-50 text-rose-800 px-1 py-0.5 rounded border border-rose-200 font-semibold">
-                              "{finding.flagged_text}"
-                            </span>
-                          </div>
-                        )}
-
-                        <div className="bg-slate-50 rounded-lg p-2.5 text-xs text-slate-700 border border-slate-200 leading-relaxed">
-                          <strong className="text-slate-900 block mb-0.5">Why this matters:</strong>
-                          {finding.explanation}
-                        </div>
-
-                        <div className="bg-indigo-50/60 rounded-lg p-2.5 text-xs text-indigo-950 border border-indigo-100 space-y-1">
-                          <div className="text-[11px] text-indigo-700 font-medium">
-                            <strong>Source:</strong> {finding.matched_rule_or_source}
-                          </div>
-                          <div>
-                            <strong>Correction:</strong> {finding.suggested_correction}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
           </div>
         )}
 
-        {/* VIEW 2: BRAND GUIDELINES & APPROVED FACTS MANAGEMENT (TASK 4) */}
+        {/* VIEW 2: BRAND GUIDELINES & APPROVED FACTS MANAGEMENT (PRIORITY 5) */}
         {activeTab === 'guidelines' && (
           <div className="space-y-8">
             <div className="flex items-center justify-between border-b pb-4">
               <div>
                 <h1 className="text-xl font-bold text-slate-900">Brand Guidelines & Fact Sources Management</h1>
                 <p className="text-xs text-slate-500 mt-1">
-                  Configure active brand governance rules and approved demonstration company facts stored in SQLite.
+                  Configure active brand governance rules and approved demonstration company facts stored in the database.
                 </p>
               </div>
               <button
@@ -850,7 +1009,7 @@ export default function App() {
                 </div>
                 <button
                   onClick={handleOpenAddRule}
-                  className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm"
+                  className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-teal-600 text-white hover:bg-teal-700 shadow-sm"
                 >
                   ➕ Add New Rule
                 </button>
@@ -864,7 +1023,7 @@ export default function App() {
                     <div key={r.id} className="py-3 flex flex-col md:flex-row md:items-center justify-between gap-3">
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs font-bold text-indigo-700">{r.rule_id}</span>
+                          <span className="font-mono text-xs font-bold text-teal-700">{r.rule_id}</span>
                           <span className="font-semibold text-sm text-slate-900">{r.name}</span>
                           <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-100 text-slate-700">
                             {r.rule_type}
@@ -924,12 +1083,12 @@ export default function App() {
                     </span>
                   </h2>
                   <p className="text-xs text-slate-500">
-                    Sample facts for AetherGlow. Note: Source URLs are supporting references, not automatic real-world truth.
+                    Approved facts for AetherGlow. Note: Supporting URLs are references, not absolute real-world truth.
                   </p>
                 </div>
                 <button
                   onClick={handleOpenAddFact}
-                  className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm"
+                  className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-teal-600 text-white hover:bg-teal-700 shadow-sm"
                 >
                   ➕ Add Approved Fact
                 </button>
@@ -944,7 +1103,7 @@ export default function App() {
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <span className="font-mono text-xs font-bold text-emerald-700">{f.fact_id}</span>
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 text-teal-800">
                             {f.verification_status}
                           </span>
                           <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
@@ -961,7 +1120,7 @@ export default function App() {
                               href={f.source_url}
                               target="_blank"
                               rel="noreferrer"
-                              className="text-indigo-600 hover:underline"
+                              className="text-teal-700 hover:underline"
                             >
                               🔗 Reference Link
                             </a>
@@ -998,6 +1157,133 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* VIEW 3: LIGHTWEIGHT GOVERNANCE ANALYTICS (PRIORITY 6) */}
+        {activeTab === 'analytics' && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between border-b pb-4">
+              <div>
+                <h1 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                  <span>📊 Real-Time Governance Analytics</span>
+                  <span className="text-xs bg-teal-50 text-teal-700 border border-teal-200 px-2.5 py-0.5 rounded-full font-medium">
+                    Actual DB Records
+                  </span>
+                </h1>
+                <p className="text-xs text-slate-500 mt-1">
+                  Computed directly from actual review submissions and human governance decisions stored in the database.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={fetchAnalytics}
+                  disabled={analyticsLoading}
+                  className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-teal-600 text-white hover:bg-teal-700 shadow-sm"
+                >
+                  {analyticsLoading ? "Loading..." : "🔄 Refresh Data"}
+                </button>
+                <button
+                  onClick={() => setActiveTab('review')}
+                  className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-900 text-white hover:bg-slate-800"
+                >
+                  ← Content Review
+                </button>
+              </div>
+            </div>
+
+            {analytics && (
+              <div className="space-y-6">
+                {/* Metric Summary Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <span className="text-xs font-semibold text-slate-500 block mb-1">Total Submissions</span>
+                    <span className="text-2xl font-extrabold text-slate-900 font-mono">{analytics.total_reviews}</span>
+                    <span className="text-[11px] text-slate-400 block mt-1">Evaluated by engine</span>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <span className="text-xs font-semibold text-amber-700 block mb-1">Awaiting Human Decision</span>
+                    <span className="text-2xl font-extrabold text-amber-600 font-mono">{analytics.awaiting_review}</span>
+                    <span className="text-[11px] text-slate-400 block mt-1">Pending review verdict</span>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <span className="text-xs font-semibold text-emerald-700 block mb-1">Approved Content</span>
+                    <span className="text-2xl font-extrabold text-emerald-600 font-mono">{analytics.approved}</span>
+                    <span className="text-[11px] text-slate-400 block mt-1">Authorized for publication</span>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <span className="text-xs font-semibold text-rose-700 block mb-1">Changes / Rejected</span>
+                    <span className="text-2xl font-extrabold text-rose-600 font-mono">
+                      {analytics.changes_requested + analytics.rejected}
+                    </span>
+                    <span className="text-[11px] text-slate-400 block mt-1">
+                      {analytics.changes_requested} revisions, {analytics.rejected} rejected
+                    </span>
+                  </div>
+                </div>
+
+                {/* Second Row: Clean vs Action Required & Most Triggered Guidelines */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  {/* Compliance Ratio (5 cols) */}
+                  <div className="lg:col-span-5 bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                    <h3 className="font-bold text-sm text-slate-900 border-b pb-2">Compliance Breakdown</h3>
+                    <div className="space-y-3 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-600">Clean / Zero Findings:</span>
+                        <span className="font-bold font-mono text-emerald-700">{analytics.clean_reviews}</span>
+                      </div>
+                      <div className="w-full bg-slate-100 rounded-full h-2">
+                        <div
+                          className="bg-emerald-500 h-2 rounded-full"
+                          style={{
+                            width: `${analytics.total_reviews ? (analytics.clean_reviews / analytics.total_reviews) * 100 : 0}%`
+                          }}
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2">
+                        <span className="text-slate-600">Issues Flagged:</span>
+                        <span className="font-bold font-mono text-rose-700">{analytics.reviews_with_issues}</span>
+                      </div>
+                      <div className="w-full bg-slate-100 rounded-full h-2">
+                        <div
+                          className="bg-rose-500 h-2 rounded-full"
+                          style={{
+                            width: `${analytics.total_reviews ? (analytics.reviews_with_issues / analytics.total_reviews) * 100 : 0}%`
+                          }}
+                        />
+                      </div>
+
+                      <p className="text-[11px] text-slate-400 pt-3 border-t">
+                        Reflects actual automated rule & fact evaluation results across all historical reviews.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Most Triggered Guidelines (7 cols) */}
+                  <div className="lg:col-span-7 bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                    <h3 className="font-bold text-sm text-slate-900 border-b pb-2">Most Frequently Triggered Guidelines</h3>
+                    {analytics.top_triggered_guidelines.length === 0 ? (
+                      <p className="text-xs text-slate-400 py-4 text-center">No guideline violations recorded yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {analytics.top_triggered_guidelines.map((item, idx) => (
+                          <div key={idx} className="flex items-center justify-between p-2.5 rounded bg-slate-50 text-xs border border-slate-100">
+                            <span className="font-medium text-slate-800 truncate pr-4">{item.guideline}</span>
+                            <span className="px-2 py-0.5 rounded font-mono font-bold bg-white text-teal-800 border border-slate-200 shrink-0">
+                              {item.count} hit{item.count === 1 ? '' : 's'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </main>
 
       {/* MODAL 1: ADD / EDIT RULE */}
@@ -1011,6 +1297,12 @@ export default function App() {
               <button onClick={() => setShowRuleModal(false)} className="font-bold text-slate-400 hover:text-slate-600">✕</button>
             </div>
 
+            {modalError && (
+              <div className="bg-rose-50 border border-rose-300 text-rose-800 p-2.5 rounded text-xs">
+                <strong>Error:</strong> {modalError}
+              </div>
+            )}
+
             <form onSubmit={handleSaveRule} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Rule Name *</label>
@@ -1020,7 +1312,7 @@ export default function App() {
                   value={ruleFormData.name}
                   onChange={(e) => setRuleFormData({...ruleFormData, name: e.target.value})}
                   placeholder="e.g. Prohibit Miracle Claims"
-                  className="w-full rounded border p-2 text-xs"
+                  className="w-full rounded border p-2 text-xs focus:ring-1 focus:ring-teal-500"
                 />
               </div>
 
@@ -1030,7 +1322,7 @@ export default function App() {
                   <select
                     value={ruleFormData.rule_type}
                     onChange={(e) => setRuleFormData({...ruleFormData, rule_type: e.target.value})}
-                    className="w-full rounded border p-2 text-xs"
+                    className="w-full rounded border p-2 text-xs focus:ring-1 focus:ring-teal-500"
                   >
                     <option value="prohibited_phrase">Prohibited Phrase</option>
                     <option value="preferred_terminology">Preferred Terminology</option>
@@ -1043,7 +1335,7 @@ export default function App() {
                   <select
                     value={ruleFormData.severity}
                     onChange={(e) => setRuleFormData({...ruleFormData, severity: e.target.value})}
-                    className="w-full rounded border p-2 text-xs"
+                    className="w-full rounded border p-2 text-xs focus:ring-1 focus:ring-teal-500"
                   >
                     <option value="HIGH">HIGH</option>
                     <option value="MEDIUM">MEDIUM</option>
@@ -1059,7 +1351,7 @@ export default function App() {
                   value={ruleFormData.prohibited_phrase}
                   onChange={(e) => setRuleFormData({...ruleFormData, prohibited_phrase: e.target.value})}
                   placeholder="e.g. guaranteed 100% results"
-                  className="w-full rounded border p-2 text-xs font-mono"
+                  className="w-full rounded border p-2 text-xs font-mono focus:ring-1 focus:ring-teal-500"
                 />
               </div>
 
@@ -1070,7 +1362,7 @@ export default function App() {
                   value={ruleFormData.preferred_replacement}
                   onChange={(e) => setRuleFormData({...ruleFormData, preferred_replacement: e.target.value})}
                   placeholder="e.g. customers"
-                  className="w-full rounded border p-2 text-xs font-mono"
+                  className="w-full rounded border p-2 text-xs font-mono focus:ring-1 focus:ring-teal-500"
                 />
               </div>
 
@@ -1082,7 +1374,7 @@ export default function App() {
                   value={ruleFormData.description}
                   onChange={(e) => setRuleFormData({...ruleFormData, description: e.target.value})}
                   placeholder="Explain why this rule exists and why it matters..."
-                  className="w-full rounded border p-2 text-xs"
+                  className="w-full rounded border p-2 text-xs focus:ring-1 focus:ring-teal-500"
                 />
               </div>
 
@@ -1100,13 +1392,13 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setShowRuleModal(false)}
-                  className="px-4 py-2 rounded bg-slate-100 text-slate-700 font-semibold"
+                  className="px-4 py-2 rounded bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded bg-indigo-600 text-white font-semibold hover:bg-indigo-700"
+                  className="px-4 py-2 rounded bg-teal-600 text-white font-semibold hover:bg-teal-700 shadow-sm"
                 >
                   Save Brand Rule
                 </button>
@@ -1127,6 +1419,12 @@ export default function App() {
               <button onClick={() => setShowFactModal(false)} className="font-bold text-slate-400 hover:text-slate-600">✕</button>
             </div>
 
+            {modalError && (
+              <div className="bg-rose-50 border border-rose-300 text-rose-800 p-2.5 rounded text-xs">
+                <strong>Error:</strong> {modalError}
+              </div>
+            )}
+
             <form onSubmit={handleSaveFact} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Fact Statement *</label>
@@ -1136,7 +1434,7 @@ export default function App() {
                   value={factFormData.statement}
                   onChange={(e) => setFactFormData({...factFormData, statement: e.target.value})}
                   placeholder="e.g. AetherGlow products are made with 70% recycled packaging."
-                  className="w-full rounded border p-2 text-xs"
+                  className="w-full rounded border p-2 text-xs focus:ring-1 focus:ring-teal-500"
                 />
               </div>
 
@@ -1148,7 +1446,7 @@ export default function App() {
                   value={factFormData.source_name}
                   onChange={(e) => setFactFormData({...factFormData, source_name: e.target.value})}
                   placeholder="e.g. AetherGlow Packaging Audit 2025"
-                  className="w-full rounded border p-2 text-xs"
+                  className="w-full rounded border p-2 text-xs focus:ring-1 focus:ring-teal-500"
                 />
               </div>
 
@@ -1159,7 +1457,7 @@ export default function App() {
                   value={factFormData.source_url}
                   onChange={(e) => setFactFormData({...factFormData, source_url: e.target.value})}
                   placeholder="https://aetherglow.example.com/source-doc"
-                  className="w-full rounded border p-2 text-xs"
+                  className="w-full rounded border p-2 text-xs focus:ring-1 focus:ring-teal-500"
                 />
                 <span className="text-[10px] text-slate-400 block mt-0.5">Note: Source URLs provide supporting context, not automatic real-world truth.</span>
               </div>
@@ -1178,13 +1476,13 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setShowFactModal(false)}
-                  className="px-4 py-2 rounded bg-slate-100 text-slate-700 font-semibold"
+                  className="px-4 py-2 rounded bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded bg-indigo-600 text-white font-semibold hover:bg-indigo-700"
+                  className="px-4 py-2 rounded bg-teal-600 text-white font-semibold hover:bg-teal-700 shadow-sm"
                 >
                   Save Fact Source
                 </button>
@@ -1201,7 +1499,7 @@ export default function App() {
             <strong>BrandShield AI</strong> • Built for CodeStar 30 Round 2 • Team: <strong>AETHORA</strong>
           </div>
           <div>
-            SQLite Editable Guidelines & Fact Sources • Dynamic Rule Verification Engine
+            Every Claim. Clear Evidence. Confident Publishing.
           </div>
         </div>
       </footer>

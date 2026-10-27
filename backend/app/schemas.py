@@ -9,7 +9,14 @@ from pydantic import BaseModel, Field, field_validator, model_validator, ConfigD
 
 
 # ---------------- Brand Rule Schemas (Task 4) ----------------
-VALID_RULE_TYPES = ["prohibited_phrase", "preferred_terminology", "required_phrase", "custom_text"]
+VALID_RULE_TYPES = [
+    "prohibited_phrase",
+    "prohibited",
+    "preferred_terminology",
+    "terminology",
+    "required_phrase",
+    "custom_text"
+]
 VALID_SEVERITIES = ["HIGH", "MEDIUM", "LOW"]
 
 class BrandRuleCreate(BaseModel):
@@ -141,12 +148,18 @@ class ApprovedFactResponse(BaseModel):
 class FindingDetailSchema(BaseModel):
     id: Optional[str] = None
     finding_type: str = Field(..., description="Prohibited Phrase, Terminology Mismatch, Factual Contradiction, or Unsupported Claim")
+    type: Optional[str] = None
     severity: str = Field(..., description="HIGH, MEDIUM, or LOW")
     explanation: str = Field(..., description="Clear explanation of the issue and why it matters")
     matched_rule_or_source: str = Field(..., description="ID and title of the matched brand rule or approved source fact")
+    source: Optional[str] = None
     suggested_correction: str = Field(..., description="Actionable recommended fix")
     status_or_uncertainty_label: str = Field(..., description="Confirmed Violation, Confirmed Contradiction, or Unverified claim")
+    status: Optional[str] = None
     flagged_text: Optional[str] = Field(None, description="The specific text snippet flagged")
+    matched_text: Optional[str] = None
+    start_offset: Optional[int] = None
+    end_offset: Optional[int] = None
 
     # Compatibility fields
     category: Optional[str] = None
@@ -221,6 +234,8 @@ class ContentReviewResponse(BaseModel):
     guidelines_snapshot: Optional[Dict[str, Any]] = None
     human_decision: Optional[HumanDecisionResponse] = None
     decisions: List[HumanDecisionResponse] = []
+    summary_message: Optional[str] = None
+    summary_breakdown: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -232,6 +247,25 @@ class ContentReviewListItem(BaseModel):
     total_findings: int
     created_at: datetime
     latest_decision: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------- Governance Analytics Schemas (Priority 6) ----------------
+class TopGuidelineItem(BaseModel):
+    guideline: str
+    count: int
+
+
+class AnalyticsSummaryResponse(BaseModel):
+    total_reviews: int
+    awaiting_review: int
+    approved: int
+    rejected: int
+    changes_requested: int
+    clean_reviews: int
+    reviews_with_issues: int
+    top_triggered_guidelines: List[TopGuidelineItem] = []
 
     model_config = ConfigDict(from_attributes=True)
 

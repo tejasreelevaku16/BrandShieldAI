@@ -7,6 +7,7 @@ and human governance decisions.
 
 from contextlib import asynccontextmanager
 from typing import List, Optional
+import os
 import uuid
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,7 +44,9 @@ from .schemas import (
     ReviewDecisionCreate,
     ReviewRecordSchema,
     SubmissionDetailResponse,
-    SubmissionListItemSchema
+    SubmissionListItemSchema,
+    AnalyticsSummaryResponse,
+    TopGuidelineItem
 )
 from .rules_data import BRAND_PROFILE, BRAND_RULES, APPROVED_FACTS, APPROVED_WHITELIST_CLAIMS
 from .engine import analyze_marketing_text
@@ -88,7 +91,7 @@ def seed_default_guidelines_if_empty(db: Session):
                 id=str(uuid.uuid4()),
                 fact_id="FACT-PKG-01",
                 statement="AetherGlow products are made with 70% recycled packaging.",
-                source_name="AetherGlow Packaging Audit 2025",
+                source_name="AetherGlow sample brand facts",
                 source_url="https://aetherglow.example.com/sustainability-2025",
                 verification_status="verified_sample",
                 is_active=True
@@ -107,10 +110,29 @@ def seed_default_guidelines_if_empty(db: Session):
         db.commit()
 
 
+def ensure_db_schema_migrated():
+    """
+    Ensures database schema has all columns expected by SQLAlchemy models.
+    Safely adds guidelines_snapshot column to content_reviews if it doesn't already exist.
+    """
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(engine)
+        if "content_reviews" in inspector.get_table_names():
+            columns = [c["name"] for c in inspector.get_columns("content_reviews")]
+            if "guidelines_snapshot" not in columns:
+                with engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE content_reviews ADD COLUMN guidelines_snapshot JSON"))
+                    conn.commit()
+    except Exception as e:
+        print(f"[Database Schema Migration] Notice: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize SQLite database tables safely on startup
     Base.metadata.create_all(bind=engine)
+    ensure_db_schema_migrated()
     db = SessionLocal()
     try:
         seed_default_guidelines_if_empty(db)
@@ -126,11 +148,20 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for React frontend
+# Configurable CORS origins via environment variable (comma-separated list), e.g. "https://brandshield.vercel.app,http://localhost:5173"
+# If CORS_ORIGINS is not set or set to "*", all origins are allowed.
+cors_origins_env = os.getenv("CORS_ORIGINS", "*").strip()
+if cors_origins_env == "*" or not cors_origins_env:
+    allowed_origins = ["*"]
+    allow_credentials = False
+else:
+    allowed_origins = [orig.strip() for orig in cors_origins_env.split(",") if orig.strip()]
+    allow_credentials = True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=allowed_origins,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -161,13 +192,19 @@ def format_content_review_response(review: ContentReview) -> ContentReviewRespon
     findings_list = [
         FindingDetailSchema(
             id=f.get("id"),
-            finding_type=f["finding_type"],
-            severity=f["severity"],
-            explanation=f["explanation"],
-            matched_rule_or_source=f["matched_rule_or_source"],
-            suggested_correction=f["suggested_correction"],
-            status_or_uncertainty_label=f["status_or_uncertainty_label"],
-            flagged_text=f.get("flagged_text"),
+            finding_type=f.get("finding_type") or f.get("type", "Brand Rule Violation"),
+            type=f.get("type") or f.get("finding_type", "Brand Rule Violation"),
+            severity=f.get("severity", "MEDIUM"),
+            explanation=f.get("explanation", ""),
+            matched_rule_or_source=f.get("matched_rule_or_source") or f.get("source", ""),
+            source=f.get("source") or f.get("matched_rule_or_source", ""),
+            suggested_correction=f.get("suggested_correction", ""),
+            status_or_uncertainty_label=f.get("status_or_uncertainty_label") or f.get("status", "Confirmed Violation"),
+            status=f.get("status") or f.get("status_or_uncertainty_label", "Confirmed Violation"),
+            flagged_text=f.get("flagged_text") or f.get("matched_text"),
+            matched_text=f.get("matched_text") or f.get("flagged_text"),
+            start_offset=f.get("start_offset"),
+            end_offset=f.get("end_offset"),
             category=f.get("category"),
             rule_or_evidence_id=f.get("rule_or_evidence_id"),
             rule_title=f.get("rule_title"),
@@ -175,6 +212,29 @@ def format_content_review_response(review: ContentReview) -> ContentReviewRespon
             is_resolved=f.get("is_resolved", False)
         ) for f in (review.findings or [])
     ]
+
+    rule_v = sum(1 for f in findings_list if f.category == "RULE_VIOLATION")
+    fact_c = sum(1 for f in findings_list if f.category == "FACTUAL_CONTRADICTION")
+    unsup_c = sum(1 for f in findings_list if f.category == "UNSUPPORTED_CLAIM")
+
+    if review.total_findings == 0:
+        summary_msg = "No brand governance issues or contradictory claims detected by current active rules. (Note: Always verify novel technical claims prior to publication)."
+    else:
+        breakdown = []
+        if rule_v:
+            breakdown.append(f"{rule_v} guideline violation{'s' if rule_v > 1 else ''}")
+        if fact_c:
+            breakdown.append(f"{fact_c} potential factual contradiction{'s' if fact_c > 1 else ''}")
+        if unsup_c:
+            breakdown.append(f"{unsup_c} unverified claim{'s' if unsup_c > 1 else ''}")
+        summary_msg = f"{review.total_findings} issue{'s' if review.total_findings > 1 else ''} detected ({', '.join(breakdown)})."
+
+    summary_bd = {
+        "rule_violations": rule_v,
+        "factual_contradictions": fact_c,
+        "unsupported_claims": unsup_c,
+        "total": review.total_findings
+    }
 
     return ContentReviewResponse(
         id=review.id,
@@ -185,11 +245,15 @@ def format_content_review_response(review: ContentReview) -> ContentReviewRespon
         findings=findings_list,
         guidelines_snapshot=review.guidelines_snapshot,
         human_decision=human_decision,
-        decisions=all_decisions
+        decisions=all_decisions,
+        summary_message=summary_msg,
+        summary_breakdown=summary_bd
     )
 
 
 # ---------------- System & Guidelines Summary Endpoints ----------------
+@app.get("/", tags=["System"])
+@app.get("/health", tags=["System"])
 @app.get("/api/health", tags=["System"])
 def health_check():
     """System health check and brand identity endpoint."""
@@ -202,6 +266,15 @@ def health_check():
     }
 
 
+@app.get("/semantic-status", tags=["System"])
+@app.get("/api/semantic-status", tags=["System"])
+def get_semantic_engine_status():
+    """Provides diagnostic runtime status of the NLP semantic similarity candidate matcher."""
+    from .semantic_matcher import get_semantic_matcher
+    return get_semantic_matcher().get_runtime_status()
+
+
+@app.get("/brand-guidelines", tags=["Governance"])
 @app.get("/api/brand-guidelines", tags=["Governance"])
 def get_brand_guidelines(db: Session = Depends(get_db)):
     """Returns active brand rules and approved facts from database."""
@@ -255,6 +328,7 @@ def create_rule(payload: BrandRuleCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/rules/{rule_identifier}", response_model=BrandRuleResponse, tags=["Brand Rules"])
+@app.get("/api/rules/{rule_identifier}", response_model=BrandRuleResponse, tags=["Brand Rules"])
 def get_rule(rule_identifier: str, db: Session = Depends(get_db)):
     """Retrieves a single rule by ID or rule_id."""
     rule = db.query(BrandRule).filter(
@@ -266,6 +340,7 @@ def get_rule(rule_identifier: str, db: Session = Depends(get_db)):
 
 
 @app.put("/rules/{rule_identifier}", response_model=BrandRuleResponse, tags=["Brand Rules"])
+@app.put("/api/rules/{rule_identifier}", response_model=BrandRuleResponse, tags=["Brand Rules"])
 def update_rule(rule_identifier: str, payload: BrandRuleUpdate, db: Session = Depends(get_db)):
     """Updates an existing brand rule."""
     rule = db.query(BrandRule).filter(
@@ -295,6 +370,7 @@ def update_rule(rule_identifier: str, payload: BrandRuleUpdate, db: Session = De
 
 
 @app.patch("/rules/{rule_identifier}/toggle", response_model=BrandRuleResponse, tags=["Brand Rules"])
+@app.patch("/api/rules/{rule_identifier}/toggle", response_model=BrandRuleResponse, tags=["Brand Rules"])
 def toggle_rule_active(rule_identifier: str, db: Session = Depends(get_db)):
     """Toggles active/inactive status of a brand rule."""
     rule = db.query(BrandRule).filter(
@@ -310,6 +386,7 @@ def toggle_rule_active(rule_identifier: str, db: Session = Depends(get_db)):
 
 
 @app.delete("/rules/{rule_identifier}", status_code=status.HTTP_200_OK, tags=["Brand Rules"])
+@app.delete("/api/rules/{rule_identifier}", status_code=status.HTTP_200_OK, tags=["Brand Rules"])
 def delete_rule(rule_identifier: str, db: Session = Depends(get_db)):
     """Deletes a rule after confirmation."""
     rule = db.query(BrandRule).filter(
@@ -360,6 +437,7 @@ def create_fact(payload: ApprovedFactCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/facts/{fact_identifier}", response_model=ApprovedFactResponse, tags=["Approved Facts"])
+@app.get("/api/facts/{fact_identifier}", response_model=ApprovedFactResponse, tags=["Approved Facts"])
 def get_fact(fact_identifier: str, db: Session = Depends(get_db)):
     """Retrieves an approved fact by ID or fact_id."""
     fact = db.query(ApprovedFact).filter(
@@ -371,6 +449,7 @@ def get_fact(fact_identifier: str, db: Session = Depends(get_db)):
 
 
 @app.put("/facts/{fact_identifier}", response_model=ApprovedFactResponse, tags=["Approved Facts"])
+@app.put("/api/facts/{fact_identifier}", response_model=ApprovedFactResponse, tags=["Approved Facts"])
 def update_fact(fact_identifier: str, payload: ApprovedFactUpdate, db: Session = Depends(get_db)):
     """Updates an approved fact source."""
     fact = db.query(ApprovedFact).filter(
@@ -396,6 +475,7 @@ def update_fact(fact_identifier: str, payload: ApprovedFactUpdate, db: Session =
 
 
 @app.patch("/facts/{fact_identifier}/toggle", response_model=ApprovedFactResponse, tags=["Approved Facts"])
+@app.patch("/api/facts/{fact_identifier}/toggle", response_model=ApprovedFactResponse, tags=["Approved Facts"])
 def toggle_fact_active(fact_identifier: str, db: Session = Depends(get_db)):
     """Toggles active/inactive status of an approved fact."""
     fact = db.query(ApprovedFact).filter(
@@ -411,6 +491,7 @@ def toggle_fact_active(fact_identifier: str, db: Session = Depends(get_db)):
 
 
 @app.delete("/facts/{fact_identifier}", status_code=status.HTTP_200_OK, tags=["Approved Facts"])
+@app.delete("/api/facts/{fact_identifier}", status_code=status.HTTP_200_OK, tags=["Approved Facts"])
 def delete_fact(fact_identifier: str, db: Session = Depends(get_db)):
     """Deletes an approved fact source after confirmation."""
     fact = db.query(ApprovedFact).filter(
@@ -426,6 +507,7 @@ def delete_fact(fact_identifier: str, db: Session = Depends(get_db)):
 
 # ---------------- Content Reviews & Human Governance Endpoints ----------------
 @app.post("/reviews", response_model=ContentReviewResponse, status_code=status.HTTP_201_CREATED, tags=["Reviews"])
+@app.post("/api/reviews", response_model=ContentReviewResponse, status_code=status.HTTP_201_CREATED, tags=["Reviews"])
 def create_review(payload: ReviewCreateRequest, db: Session = Depends(get_db)):
     """
     POST /reviews
@@ -474,6 +556,7 @@ def create_review(payload: ReviewCreateRequest, db: Session = Depends(get_db)):
 
 
 @app.get("/reviews", response_model=List[ContentReviewListItem], tags=["Reviews"])
+@app.get("/api/reviews", response_model=List[ContentReviewListItem], tags=["Reviews"])
 def list_reviews(limit: int = 50, db: Session = Depends(get_db)):
     """
     GET /reviews
@@ -494,7 +577,69 @@ def list_reviews(limit: int = 50, db: Session = Depends(get_db)):
     return results
 
 
+# ---------------- Priority 6: Governance Analytics Endpoint ----------------
+@app.get("/reviews/analytics", response_model=AnalyticsSummaryResponse, tags=["Analytics"])
+@app.get("/api/analytics", response_model=AnalyticsSummaryResponse, tags=["Analytics"])
+def get_governance_analytics(db: Session = Depends(get_db)):
+    """
+    Computes real-time governance metrics strictly from actual database records:
+    - Total reviews
+    - Reviews awaiting human review
+    - Counts of approved, rejected, changes_requested
+    - Clean reviews vs reviews with findings
+    - Most frequently triggered guidelines
+    """
+    reviews = db.query(ContentReview).all()
+    total_reviews = len(reviews)
+
+    approved_count = 0
+    rejected_count = 0
+    changes_requested_count = 0
+    awaiting_review_count = 0
+    clean_count = 0
+
+    rule_counts = {}
+
+    for r in reviews:
+        latest_dec = r.decisions[0].decision.lower() if r.decisions else None
+        if latest_dec == "approved":
+            approved_count += 1
+        elif latest_dec == "rejected":
+            rejected_count += 1
+        elif latest_dec in ["changes_requested", "request_changes"]:
+            changes_requested_count += 1
+        else:
+            if r.total_findings > 0:
+                awaiting_review_count += 1
+
+        if r.total_findings == 0:
+            clean_count += 1
+
+        for f in (r.findings or []):
+            rule_id = f.get("rule_or_evidence_id") or f.get("matched_rule_or_source") or "Rule"
+            rule_title = f.get("rule_title") or f.get("source") or rule_id
+            label = f"{rule_id}: {rule_title}"
+            rule_counts[label] = rule_counts.get(label, 0) + 1
+
+    top_guidelines = [
+        TopGuidelineItem(guideline=k, count=v)
+        for k, v in sorted(rule_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+    ]
+
+    return AnalyticsSummaryResponse(
+        total_reviews=total_reviews,
+        awaiting_review=awaiting_review_count,
+        approved=approved_count,
+        rejected=rejected_count,
+        changes_requested=changes_requested_count,
+        clean_reviews=clean_count,
+        reviews_with_issues=total_reviews - clean_count,
+        top_triggered_guidelines=top_guidelines
+    )
+
+
 @app.get("/reviews/{review_id}", response_model=ContentReviewResponse, tags=["Reviews"])
+@app.get("/api/reviews/{review_id}", response_model=ContentReviewResponse, tags=["Reviews"])
 def get_review(review_id: str, db: Session = Depends(get_db)):
     """
     GET /reviews/{review_id}
@@ -511,6 +656,7 @@ def get_review(review_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/reviews/{review_id}/decision", response_model=ContentReviewResponse, status_code=status.HTTP_200_OK, tags=["Reviews"])
+@app.post("/api/reviews/{review_id}/decision", response_model=ContentReviewResponse, status_code=status.HTTP_200_OK, tags=["Reviews"])
 def save_human_decision(review_id: str, payload: HumanDecisionCreateRequest, db: Session = Depends(get_db)):
     """
     POST /reviews/{review_id}/decision
@@ -579,13 +725,19 @@ def review_content(payload: ReviewRequest, db: Session = Depends(get_db)):
     response_findings = [
         FindingDetailSchema(
             id=f["id"],
-            finding_type=f["finding_type"],
-            severity=f["severity"],
-            explanation=f["explanation"],
-            matched_rule_or_source=f["matched_rule_or_source"],
-            suggested_correction=f["suggested_correction"],
-            status_or_uncertainty_label=f["status_or_uncertainty_label"],
-            flagged_text=f.get("flagged_text"),
+            finding_type=f.get("finding_type") or f.get("type", "Brand Rule Violation"),
+            type=f.get("type") or f.get("finding_type", "Brand Rule Violation"),
+            severity=f.get("severity", "MEDIUM"),
+            explanation=f.get("explanation", ""),
+            matched_rule_or_source=f.get("matched_rule_or_source") or f.get("source", ""),
+            source=f.get("source") or f.get("matched_rule_or_source", ""),
+            suggested_correction=f.get("suggested_correction", ""),
+            status_or_uncertainty_label=f.get("status_or_uncertainty_label") or f.get("status", "Confirmed Violation"),
+            status=f.get("status") or f.get("status_or_uncertainty_label", "Confirmed Violation"),
+            flagged_text=f.get("flagged_text") or f.get("matched_text"),
+            matched_text=f.get("matched_text") or f.get("flagged_text"),
+            start_offset=f.get("start_offset"),
+            end_offset=f.get("end_offset"),
             category=f.get("category"),
             rule_or_evidence_id=f.get("rule_or_evidence_id"),
             issue=f.get("issue"),
@@ -621,3 +773,10 @@ def check_text(payload: CheckTextRequest, db: Session = Depends(get_db)):
         ),
         findings=review_res.findings
     )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", "8000"))
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run("app.main:app", host=host, port=port, reload=False)
